@@ -1,0 +1,217 @@
+server:
+  port: 9100
+  secret: "your-secret-key-here"  # Leave empty or remove for no authentication
+
+system:
+  enabled: true
+  metrics:
+    - cpu
+    - ram
+    - disk
+
+scrapers:
+  # Example 1: JSON from URL
+  - name: api_metrics
+    source:
+      type: url
+      url: "https://api.example.com/metrics"
+      format: json
+    metrics:
+      - path: "response.time"
+        name: "api_response_time"
+      - path: "database.connections"
+        name: "db_connections"
+      - path: "cache.hit_rate"
+        name: "cache_hit_rate"
+        calculate: "value * 100"  # Convert to percentage
+
+  # Example 2: JSON from local file
+  - name: app_stats
+    source:
+      type: file
+      path: "/var/log/app/stats.json"
+      format: json
+    metrics:
+      - path: "requests.total"
+        name: "total_requests"
+      - path: "requests.failed"
+        name: "failed_requests"
+      - path: "uptime"
+        name: "app_uptime_seconds"
+    filter:
+      include:
+        - ".*requests.*"
+      exclude:
+        - ".*internal.*"
+
+  # Example 3: Prometheus format from URL
+  - name: node_exporter
+    source:
+      type: url
+      url: "http://localhost:9100/metrics"
+      format: prometheus
+    metrics:
+      - match: "node_cpu_seconds_total"
+        name: "node_cpu_total"
+      - match: "node_memory_MemAvailable_bytes"
+        name: "node_memory_available"
+        calculate: "value / 1024 / 1024"  # Convert to MB
+      - match: "node_disk_read_bytes_total"
+        name: "node_disk_read_mb"
+        calculate: "value / 1024 / 1024"
+
+  # Example 4: Prometheus format from file
+  - name: custom_metrics
+    source:
+      type: file
+      path: "/var/lib/prometheus/custom.prom"
+      format: prometheus
+    metrics:
+      - match: "http_requests_total"
+        name: "http_requests"
+      - match: "http_request_duration_seconds"
+        name: "http_duration_ms"
+        calculate: "value * 1000"  # Convert seconds to milliseconds
+
+  # Example 5: Raw format with default pattern (key=value)
+  - name: system_info
+    source:
+      type: file
+      path: "/proc/meminfo"
+      format: raw
+      # Default pattern: (\w+)=(\S+)
+    metrics:
+      - match: "MemTotal"
+        name: "system_memory_total_kb"
+      - match: "MemFree"
+        name: "system_memory_free_kb"
+      - match: "SwapTotal"
+        name: "system_swap_total_kb"
+
+  # Example 6: Raw format with custom regex pattern
+  - name: nginx_status
+    source:
+      type: url
+      url: "http://localhost/nginx_status"
+      format: raw
+      pattern: '(\w+):\s*(\d+)'  # Match "Active connections: 123"
+    metrics:
+      - match: "Active"
+        name: "nginx_active_connections"
+      - match: "Reading"
+        name: "nginx_reading"
+      - match: "Writing"
+        name: "nginx_writing"
+      - match: "Waiting"
+        name: "nginx_waiting"
+
+  # Example 7: Log file parsing
+  - name: error_logs
+    source:
+      type: file
+      path: "/var/log/app/error.log"
+      format: raw
+      pattern: 'ERROR.*count=(\d+).*severity=(\w+)'
+    metrics:
+      - match: "count"
+        name: "error_count"
+      - match: "severity"
+        name: "error_severity"
+
+  # Example 8: Custom application metrics (JSON)
+  - name: webapp_metrics
+    source:
+      type: url
+      url: "http://localhost:8080/internal/metrics"
+      format: json
+    metrics:
+      - path: "performance.avg_response_time"
+        name: "webapp_avg_response_ms"
+      - path: "users.active"
+        name: "webapp_active_users"
+      - path: "queue.size"
+        name: "webapp_queue_size"
+      - path: "queue.processing_time"
+        name: "webapp_queue_process_time"
+        calculate: "value / 1000"  # microseconds to milliseconds
+    filter:
+      include:
+        - "webapp_.*"
+
+  # Example 9: Database metrics (JSON with nested paths)
+  - name: database_stats
+    source:
+      type: url
+      url: "http://db-server:5000/stats"
+      format: json
+    metrics:
+      - path: "connections.active"
+        name: "db_active_connections"
+      - path: "connections.idle"
+        name: "db_idle_connections"
+      - path: "queries.per_second"
+        name: "db_queries_per_sec"
+      - path: "replication.lag"
+        name: "db_replication_lag_ms"
+      - path: "cache.size_bytes"
+        name: "db_cache_size_mb"
+        calculate: "value / 1024 / 1024"
+
+  # Example 10: IoT Device metrics (raw format)
+  - name: iot_sensors
+    source:
+      type: file
+      path: "/data/sensors/current.txt"
+      format: raw
+      pattern: 'sensor_(\w+)=([0-9.]+)'
+    metrics:
+      - match: "temperature"
+        name: "iot_temperature_celsius"
+      - match: "humidity"
+        name: "iot_humidity_percent"
+      - match: "pressure"
+        name: "iot_pressure_hpa"
+      - match: "battery"
+        name: "iot_battery_percent"
+
+  # Example 11: Multiple calculations
+  - name: performance_metrics
+    source:
+      type: url
+      url: "https://api.example.com/performance"
+      format: json
+    metrics:
+      - path: "latency.p50"
+        name: "latency_p50_ms"
+      - path: "latency.p95"
+        name: "latency_p95_ms"
+      - path: "latency.p99"
+        name: "latency_p99_ms"
+      - path: "throughput"
+        name: "throughput_req_per_sec"
+        calculate: "value / 60"  # Convert per minute to per second
+      - path: "bandwidth.bytes"
+        name: "bandwidth_mbps"
+        calculate: "value * 8 / 1000000"  # bytes to megabits
+
+  # Example 12: Filtered Prometheus metrics
+  - name: kubernetes_metrics
+    source:
+      type: url
+      url: "http://k8s-metrics:9090/metrics"
+      format: prometheus
+    metrics:
+      - match: "kube_pod_status_ready"
+        name: "k8s_pods_ready"
+      - match: "kube_deployment_replicas"
+        name: "k8s_deployment_replicas"
+      - match: "kube_node_status_allocatable_cpu_cores"
+        name: "k8s_allocatable_cpu"
+    filter:
+      include:
+        - "kube_.*"
+        - "k8s_.*"
+      exclude:
+        - ".*_bucket$"
+        - ".*_sum$"
+        - ".*_count$"

@@ -1,0 +1,36 @@
+{
+  "response": {
+    "time": 145.67,
+    "status": "ok"
+  },
+  "database": {
+    "connections": 42,
+    "queries_per_second": 1250,
+    "slow_queries": 3
+  },
+  "cache": {
+    "hit_rate": 0.95,
+    "miss_rate": 0.05,
+    "size_mb": 512
+  },
+  "requests": {
+    "total": 150000,
+    "failed": 125,
+    "success_rate": 0.9992,
+    "internal": 5000
+  },
+  "uptime": 86400,
+  "performance": {
+    "avg_response_time": 78.5,
+    "p95_response_time": 250.3,
+    "p99_response_time": 450.8
+  },
+  "users": {
+    "active": 1523,
+    "total": 45000
+  },
+  "queue": {
+    "size": 87,
+    "processing_time": 15000
+  }
+}

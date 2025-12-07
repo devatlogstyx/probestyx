@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current version
+        id: get_version
+        run: |
+          if [ -f VERSION ]; then
+            CURRENT_VERSION=$(cat VERSION)
+          else
+            CURRENT_VERSION="0.0.0"
+          fi
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Bump version
+        id: bump
+        run: |
+          CURRENT="${{ steps.get_version.outputs.current_version }}"
+          IFS='.' read -r -a VERSION_PARTS <<< "$CURRENT"
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]}"
+          PATCH="${VERSION_PARTS[2]}"
+
+          case "${{ github.event.inputs.bump_type }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "$NEW_VERSION" > VERSION
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add VERSION
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }}"
+          git push
+
+  build-latest:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          OUTPUT_NAME="probestyx-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
+          go build -o "$OUTPUT_NAME" ./cmd/probestyx
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: probestyx-latest-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: probestyx-*
+
+  release-latest:
+    needs: [bump-version, build-latest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name "probestyx-*" -exec cp {} release-assets/ \;
+          ls -lah release-assets/
+
+      - name: Delete existing latest release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+
+      - name: Create latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create latest \
+            --title "Latest Release" \
+            --notes "This is the latest development release. Version: ${{ needs.bump-version.outputs.new_version }}
+
+          **Installation:**
+          Download the binary for your platform and run it.
+
+          **Binaries:**
+          - Linux (amd64, arm64)
+          - macOS (amd64, arm64)
+          - Windows (amd64)
+
+          For the stable release, see version ${{ needs.bump-version.outputs.new_version }} tag." \
+            --prerelease \
+            release-assets/*
+
+  build-version:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          OUTPUT_NAME="probestyx-v${{ needs.bump-version.outputs.new_version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
+          go build -ldflags "-X main.version=${{ needs.bump-version.outputs.new_version }}" -o "$OUTPUT_NAME" ./cmd/probestyx
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: probestyx-v${{ needs.bump-version.outputs.new_version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: probestyx-*
+
+  release-version:
+    needs: [bump-version, build-version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name "probestyx-*" -exec cp {} release-assets/ \;
+          ls -lah release-assets/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last version tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create version release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.bump-version.outputs.new_version }}" \
+            --title "Release v${{ needs.bump-version.outputs.new_version }}" \
+            --notes "## What's Changed
+
+          ${{ steps.changelog.outputs.CHANGELOG }}
+
+          ## Installation
+
+          Download the binary for your platform:
+
+          ### Linux
+          \`\`\`bash
+          # AMD64
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.bump-version.outputs.new_version }}/probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-amd64
+          chmod +x probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-amd64
+          sudo mv probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-amd64 /usr/local/bin/probestyx
+
+          # ARM64
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.bump-version.outputs.new_version }}/probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-arm64
+          chmod +x probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-arm64
+          sudo mv probestyx-v${{ needs.bump-version.outputs.new_version }}-linux-arm64 /usr/local/bin/probestyx
+          \`\`\`
+
+          ### macOS
+          \`\`\`bash
+          # Intel (AMD64)
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.bump-version.outputs.new_version }}/probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-amd64
+          chmod +x probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-amd64
+          sudo mv probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-amd64 /usr/local/bin/probestyx
+
+          # Apple Silicon (ARM64)
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.bump-version.outputs.new_version }}/probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-arm64
+          chmod +x probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-arm64
+          sudo mv probestyx-v${{ needs.bump-version.outputs.new_version }}-darwin-arm64 /usr/local/bin/probestyx
+          \`\`\`
+
+          ### Windows
+          Download \`probestyx-v${{ needs.bump-version.outputs.new_version }}-windows-amd64.exe\` and run it.
+
+          ## Usage
+          \`\`\`bash
+          probestyx config.yaml
+          \`\`\`" \
+            release-assets/*

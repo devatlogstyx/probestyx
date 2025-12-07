@@ -1,0 +1,50 @@
+# HELP node_cpu_seconds_total Seconds the CPUs spent in each mode.
+# TYPE node_cpu_seconds_total counter
+node_cpu_seconds_total{cpu="0",mode="idle"} 12345.67
+node_cpu_seconds_total{cpu="0",mode="system"} 987.12
+node_cpu_seconds_total{cpu="0",mode="user"} 2345.89
+
+# HELP node_memory_MemAvailable_bytes Memory available in bytes
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes 4294967296
+
+# HELP node_memory_MemTotal_bytes Total memory in bytes
+# TYPE node_memory_MemTotal_bytes gauge
+node_memory_MemTotal_bytes 17179869184
+
+# HELP node_disk_read_bytes_total Total bytes read from disk
+# TYPE node_disk_read_bytes_total counter
+node_disk_read_bytes_total{device="sda"} 52428800000
+
+# HELP node_disk_write_bytes_total Total bytes written to disk
+# TYPE node_disk_write_bytes_total counter
+node_disk_write_bytes_total{device="sda"} 31457280000
+
+# HELP http_requests_total Total HTTP requests
+# TYPE http_requests_total counter
+http_requests_total{method="GET",status="200"} 150000
+http_requests_total{method="POST",status="200"} 45000
+http_requests_total{method="GET",status="404"} 1250
+
+# HELP http_request_duration_seconds HTTP request duration
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{le="0.1"} 95000
+http_request_duration_seconds_bucket{le="0.5"} 145000
+http_request_duration_seconds_bucket{le="1.0"} 149500
+http_request_duration_seconds_sum 12345.67
+http_request_duration_seconds_count 150000
+
+# HELP kube_pod_status_ready Number of ready pods
+# TYPE kube_pod_status_ready gauge
+kube_pod_status_ready{namespace="default",pod="app-1"} 1
+kube_pod_status_ready{namespace="default",pod="app-2"} 1
+kube_pod_status_ready{namespace="kube-system",pod="coredns"} 1
+
+# HELP kube_deployment_replicas Number of desired replicas
+# TYPE kube_deployment_replicas gauge
+kube_deployment_replicas{namespace="default",deployment="app"} 3
+
+# HELP kube_node_status_allocatable_cpu_cores Allocatable CPU cores
+# TYPE kube_node_status_allocatable_cpu_cores gauge
+kube_node_status_allocatable_cpu_cores{node="worker-1"} 8
+kube_node_status_allocatable_cpu_cores{node="worker-2"} 8

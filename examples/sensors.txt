@@ -1,0 +1,25 @@
+sensor_temperature=23.5
+sensor_humidity=65.2
+sensor_pressure=1013.25
+sensor_battery=87.0
+sensor_light=450
+sensor_motion=0
+
+# Nginx status example format
+Active connections: 123
+server accepts handled requests
+ 5000 5000 12500
+Reading: 5 Writing: 10 Waiting: 108
+
+# Key-value format
+uptime=86400
+load_average=1.25
+total_connections=5000
+active_sessions=145
+memory_usage=75.5
+cpu_usage=32.8
+
+# Error log example
+ERROR 2024-12-07 10:15:30 count=5 severity=high message="Database timeout"
+ERROR 2024-12-07 10:16:45 count=2 severity=medium message="Cache miss"
+ERROR 2024-12-07 10:18:12 count=1 severity=low message="Slow query"

@@ -1,0 +1,55 @@
+# Simple configuration without authentication
+server:
+  port: 9100
+  # secret: ""  # No authentication
+
+system:
+  enabled: true
+  metrics:
+    - cpu
+    - ram
+    - disk
+
+scrapers:
+  # Read JSON from local file
+  - name: app_metrics
+    source:
+      type: file
+      path: "./examples/stats.json"
+      format: json
+    metrics:
+      - path: "database.connections"
+        name: "db_connections"
+      - path: "cache.hit_rate"
+        name: "cache_hit_rate"
+        calculate: "value * 100"
+      - path: "requests.total"
+        name: "total_requests"
+
+  # Read Prometheus metrics from file
+  - name: node_metrics
+    source:
+      type: file
+      path: "./examples/metrics.prom"
+      format: prometheus
+    metrics:
+      - match: "node_memory_MemAvailable_bytes"
+        name: "memory_available_mb"
+        calculate: "value / 1024 / 1024"
+      - match: "http_requests_total"
+        name: "http_requests"
+
+  # Parse raw text file
+  - name: sensor_data
+    source:
+      type: file
+      path: "./examples/sensors.txt"
+      format: raw
+      pattern: 'sensor_(\w+)=([0-9.]+)'
+    metrics:
+      - match: "temperature"
+        name: "temperature_celsius"
+      - match: "humidity"
+        name: "humidity_percent"
+      - match: "battery"
+        name: "battery_level"
