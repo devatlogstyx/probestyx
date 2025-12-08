@@ -39,9 +39,14 @@ server:
 system:
   enabled: true
   metrics:
-    - cpu
-    - ram
-    - disk
+    - cpu_percent
+    - ram_percent
+    - disk_percent
+    - available_ram_mb
+    - available_disk_gb
+    - total_ram_mb
+    - total_disk_gb
+    - system_uptime_seconds
 
 scrapers:
   - name: scraper_name
@@ -227,9 +232,9 @@ server:
 
 ```json
 {
-  "cpu": 45.2,
-  "ram": 67.8,
-  "disk": 52.3,
+  "cpu_percent": 45.2,
+  "ram_percent": 67.8,
+  "disk_percent": 52.3,
   "db_connections": 42,
   "cache_hit_rate": 95,
   "temperature_celsius": 23.5,
