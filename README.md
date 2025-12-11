@@ -382,6 +382,237 @@ curl http://localhost:9100/metrics
 curl http://localhost:9100/health
 ```
 
+## Running in Production
+
+### Systemd Service (Linux)
+
+Create a systemd service file to run Probestyx as a background service with auto-restart.
+
+1. Create the service file:
+
+```bash
+sudo nano /etc/systemd/system/probestyx.service
+```
+
+2. Add the following configuration:
+
+```ini
+[Unit]
+Description=Probestyx Metrics Collection Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=probestyx
+Group=probestyx
+WorkingDirectory=/opt/probestyx
+ExecStart=/opt/probestyx/probestyx /opt/probestyx/config.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=probestyx
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/probestyx
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Set up the application:
+
+```bash
+# Create user for running the service
+sudo useradd -r -s /bin/false probestyx
+
+# Create directory and copy files
+sudo mkdir -p /opt/probestyx
+sudo cp probestyx /opt/probestyx/
+sudo cp config.yaml /opt/probestyx/
+sudo chown -R probestyx:probestyx /opt/probestyx
+sudo chmod +x /opt/probestyx/probestyx
+```
+
+4. Enable and start the service:
+
+```bash
+# Reload systemd to recognize the new service
+sudo systemctl daemon-reload
+
+# Enable service to start on boot
+sudo systemctl enable probestyx
+
+# Start the service
+sudo systemctl start probestyx
+
+# Check service status
+sudo systemctl status probestyx
+
+# View logs
+sudo journalctl -u probestyx -f
+```
+
+5. Manage the service:
+
+```bash
+# Stop the service
+sudo systemctl stop probestyx
+
+# Restart the service
+sudo systemctl restart probestyx
+
+# Disable auto-start
+sudo systemctl disable probestyx
+
+# View recent logs
+sudo journalctl -u probestyx -n 100 --no-pager
+```
+
+### Docker Container
+
+Run Probestyx in a Docker container with auto-restart:
+
+1. Create a Dockerfile:
+
+```dockerfile
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN go build -o probestyx ./cmd/probestyx
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=builder /app/probestyx .
+COPY config.yaml .
+EXPOSE 9100
+CMD ["./probestyx"]
+```
+
+2. Build and run:
+
+```bash
+# Build the image
+docker build -t probestyx .
+
+# Run with auto-restart
+docker run -d \
+  --name probestyx \
+  --restart unless-stopped \
+  -p 9100:9100 \
+  -v $(pwd)/config.yaml:/root/config.yaml:ro \
+  probestyx
+
+# View logs
+docker logs -f probestyx
+
+# Stop container
+docker stop probestyx
+
+# Start container
+docker start probestyx
+```
+
+### Docker Compose
+
+Create a `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  probestyx:
+    build: .
+    container_name: probestyx
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - ./config.yaml:/root/config.yaml:ro
+    environment:
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+Run with:
+
+```bash
+docker-compose up -d
+docker-compose logs -f
+docker-compose down
+```
+
+### Supervisor (Alternative)
+
+For systems without systemd, use Supervisor:
+
+1. Install Supervisor:
+
+```bash
+sudo apt-get install supervisor  # Debian/Ubuntu
+sudo yum install supervisor      # CentOS/RHEL
+```
+
+2. Create configuration file `/etc/supervisor/conf.d/probestyx.conf`:
+
+```ini
+[program:probestyx]
+command=/opt/probestyx/probestyx /opt/probestyx/config.yaml
+directory=/opt/probestyx
+user=probestyx
+autostart=true
+autorestart=true
+redirect_stderr=true
+stdout_logfile=/var/log/probestyx.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+```
+
+3. Manage with Supervisor:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start probestyx
+sudo supervisorctl status probestyx
+```
+
+### Windows Service
+
+For Windows, use NSSM (Non-Sucking Service Manager):
+
+1. Download NSSM from https://nssm.cc/download
+
+2. Install as service:
+
+```cmd
+nssm install Probestyx "C:\probestyx\probestyx.exe" "C:\probestyx\config.yaml"
+nssm set Probestyx AppDirectory "C:\probestyx"
+nssm set Probestyx DisplayName "Probestyx Metrics Collection"
+nssm set Probestyx Description "Collects and aggregates system and application metrics"
+nssm set Probestyx Start SERVICE_AUTO_START
+nssm start Probestyx
+```
+
+3. Manage the service:
+
+```cmd
+nssm status Probestyx
+nssm restart Probestyx
+nssm stop Probestyx
+nssm remove Probestyx confirm
+```
+
 ## License
 
 MIT
