@@ -56,7 +56,7 @@ func CollectSystem() map[string]interface{} {
 		switch metric {
 		case "cpu_usage_percent":
 			if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {
-				metrics["cpu_percent"] = utils.Round(percent[0], 2)
+				metrics["cpu_usage_percent"] = utils.Round(percent[0], 2)
 			}
 		case "cpu_usage_per_core":
 			if percent, err := cpu.Percent(time.Second, true); err == nil {
@@ -88,7 +88,7 @@ func CollectSystem() map[string]interface{} {
 			}
 		case "ram_usage_percent":
 			if v, err := mem.VirtualMemory(); err == nil {
-				metrics["ram_percent"] = utils.Round(v.UsedPercent, 2)
+				metrics["ram_usage_percent"] = utils.Round(v.UsedPercent, 2)
 			}
 		case "available_ram_mb":
 			if v, err := mem.VirtualMemory(); err == nil {
@@ -126,7 +126,7 @@ func CollectSystem() map[string]interface{} {
 			}
 		case "disk_usage_percent":
 			if usage, err := disk.Usage("/"); err == nil {
-				metrics["disk_percent"] = utils.Round(usage.UsedPercent, 2)
+				metrics["disk_usage_percent"] = utils.Round(usage.UsedPercent, 2)
 			}
 		case "available_disk_gb":
 			if usage, err := disk.Usage("/"); err == nil {
