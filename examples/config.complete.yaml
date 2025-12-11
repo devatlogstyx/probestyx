@@ -1,18 +1,60 @@
 server:
-  port: 9100
-  secret: "your-secret-key-here"  # Leave empty or remove for no authentication
+  port: 9200
+  #secret: "your-secret-key-here"  # Leave empty or remove for no authentication
 
 system:
   enabled: true
   metrics:
-    - cpu_percent
-    - ram_percent
-    - disk_percent
+    # CPU Metrics
+    - cpu_usage_percent
+    - cpu_usage_per_core
+    - cpu_count
+    - cpu_count_physical
+    - cpu_load_1min
+    - cpu_load_5min
+    - cpu_load_15min
+    
+    # Memory Metrics
+    - ram_usage_percent
     - available_ram_mb
-    - available_disk_gb
     - total_ram_mb
+    - ram_cached_mb
+    - ram_buffers_mb
+    - swap_usage_percent
+    - swap_total_mb
+    - swap_used_mb
+    
+    # Disk Metrics
+    - disk_usage_percent
+    - available_disk_gb
     - total_disk_gb
+    - inode_usage_percent
+    - disk_read_bytes
+    - disk_write_bytes
+    - disk_read_bytes_per_sec
+    - disk_write_bytes_per_sec
+    - disk_read_count
+    - disk_write_count
+    
+    # Network Metrics
+    - network_bytes_sent
+    - network_bytes_recv
+    - network_bytes_sent_per_sec
+    - network_bytes_recv_per_sec
+    - network_packets_sent
+    - network_packets_recv
+    - network_errors_in
+    - network_errors_out
+    - active_connections
+    
+    # System Info
     - system_uptime_seconds
+    - boot_time_unix
+    - os_platform
+    - os_version
+    - hostname
+    - kernel_version
+    - process_count
 
 scrapers:
   # Example 1: JSON from URL

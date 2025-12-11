@@ -24,6 +24,9 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	// Log who is requesting metrics
+	log.Printf("Metrics request from %s - User-Agent: %s", r.RemoteAddr, r.UserAgent())
+	
 	// Validate signature only if secret is configured
 	if cfg.Server.Secret != "" {
 		if !auth.ValidateSignature(r) {
@@ -37,27 +40,28 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Collect system metrics
 	if cfg.System.Enabled {
 		sysMetrics := metrics.CollectSystem()
-		for k, v := range sysMetrics {
-			result[k] = v
+		// Use the configured name or default to "system"
+		systemName := cfg.System.Name
+		if systemName == "" {
+			systemName = "system"
 		}
+		result[systemName] = sysMetrics
 	}
 
 	// Collect from scrapers
 	for _, scraper := range cfg.Scrapers {
 		scraperMetrics, err := metrics.CollectScraper(scraper)
 		if err != nil {
-			log.Printf("Error collecting from %s: %v", scraper.Name, err)
-			result[scraper.Name+"_error"] = err.Error()
+			log.Printf("Error collecting from %s: %v (skipping)", scraper.Name, err)
 			continue
 		}
 
-		// Merge metrics (last one wins)
-		for k, v := range scraperMetrics {
-			if _, exists := result[k]; exists {
-				log.Printf("WARN: Metric '%s' from scraper '%s' overwrites previous value", k, scraper.Name)
-			}
-			result[k] = v
+		// Check if this scraper name already exists
+		if _, exists := result[scraper.Name]; exists {
+			log.Printf("WARN: Scraper name '%s' already exists, overwriting previous value", scraper.Name)
 		}
+		
+		result[scraper.Name] = scraperMetrics
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/devatlogstyx/probestyx/internal/config"
 	"github.com/devatlogstyx/probestyx/internal/parsers"
@@ -85,7 +86,11 @@ func CollectScraper(scraper config.ScraperConfig) (map[string]interface{}, error
 }
 
 func fetchURL(url string) (string, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}

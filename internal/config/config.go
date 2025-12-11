@@ -14,6 +14,7 @@ type ServerConfig struct {
 
 type SystemConfig struct {
 	Enabled bool     `yaml:"enabled"`
+	Name    string   `yaml:"name"`
 	Metrics []string `yaml:"metrics"`
 }
 
