@@ -42,7 +42,7 @@ func CollectSystem() map[string]interface{} {
 		switch metric {
 		case "cpu_usage_percent":
 			if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {
-				metrics["cpu_percent"] = utils.Round(percent[0], 2)
+				metrics["cpu_usage_percent"] = utils.Round(percent[0], 2)
 			}
 		case "cpu_usage_per_core":
 			if percent, err := cpu.Percent(time.Second, true); err == nil {
