@@ -4,7 +4,7 @@ A flexible metrics collection and aggregation tool that can scrape metrics from 
 
 ## Features
 
-- **System Metrics**: Collect CPU, RAM, and disk usage
+- **System Metrics**: Collect CPU, RAM, disk, network, and process metrics
 - **Multiple Source Types**: URL (HTTP) and local file sources
 - **Multiple Format Support**: JSON, Prometheus, and raw text parsing
 - **Flexible Metric Mapping**: Extract and transform metrics with calculations
@@ -39,14 +39,56 @@ server:
 system:
   enabled: true
   metrics:
-    - cpu_percent
-    - ram_percent
-    - disk_percent
+    # CPU Metrics
+    - cpu_usage_percent
+    - cpu_usage_per_core
+    - cpu_count
+    - cpu_count_physical
+    - cpu_load_1min
+    - cpu_load_5min
+    - cpu_load_15min
+    
+    # Memory Metrics
+    - ram_usage_percent
     - available_ram_mb
-    - available_disk_gb
     - total_ram_mb
+    - ram_cached_mb
+    - ram_buffers_mb
+    - swap_usage_percent
+    - swap_total_mb
+    - swap_used_mb
+    
+    # Disk Metrics
+    - disk_usage_percent
+    - available_disk_gb
     - total_disk_gb
+    - inode_usage_percent
+    - disk_read_bytes
+    - disk_write_bytes
+    - disk_read_bytes_per_sec
+    - disk_write_bytes_per_sec
+    - disk_read_count
+    - disk_write_count
+    
+    # Network Metrics
+    - network_bytes_sent
+    - network_bytes_recv
+    - network_bytes_sent_per_sec
+    - network_bytes_recv_per_sec
+    - network_packets_sent
+    - network_packets_recv
+    - network_errors_in
+    - network_errors_out
+    - active_connections
+    
+    # System Info
     - system_uptime_seconds
+    - boot_time_unix
+    - os_platform
+    - os_version
+    - hostname
+    - kernel_version
+    - process_count
 
 scrapers:
   - name: scraper_name
@@ -67,6 +109,74 @@ scrapers:
       exclude:
         - ".*internal.*"
 ```
+
+## System Metrics Reference
+
+### CPU Metrics
+
+| Metric | Description | Unit |
+|--------|-------------|------|
+| `cpu_usage_percent` | Overall CPU usage | Percentage (0-100) |
+| `cpu_usage_per_core` | Per-core CPU usage | Array of percentages |
+| `cpu_count` | Number of logical CPU cores | Count |
+| `cpu_count_physical` | Number of physical CPU cores | Count |
+| `cpu_load_1min` | 1-minute load average | Load |
+| `cpu_load_5min` | 5-minute load average | Load |
+| `cpu_load_15min` | 15-minute load average | Load |
+
+### Memory Metrics
+
+| Metric | Description | Unit |
+|--------|-------------|------|
+| `ram_usage_percent` | RAM usage percentage | Percentage (0-100) |
+| `available_ram_mb` | Available RAM | Megabytes |
+| `total_ram_mb` | Total RAM | Megabytes |
+| `ram_cached_mb` | RAM used for caching | Megabytes |
+| `ram_buffers_mb` | RAM used for buffers | Megabytes |
+| `swap_usage_percent` | Swap usage percentage | Percentage (0-100) |
+| `swap_total_mb` | Total swap space | Megabytes |
+| `swap_used_mb` | Used swap space | Megabytes |
+
+### Disk Metrics
+
+| Metric | Description | Unit |
+|--------|-------------|------|
+| `disk_usage_percent` | Disk usage percentage | Percentage (0-100) |
+| `available_disk_gb` | Available disk space | Gigabytes |
+| `total_disk_gb` | Total disk space | Gigabytes |
+| `inode_usage_percent` | Inode usage percentage | Percentage (0-100) |
+| `disk_read_bytes` | Cumulative bytes read | Bytes |
+| `disk_write_bytes` | Cumulative bytes written | Bytes |
+| `disk_read_bytes_per_sec` | Disk read rate | Bytes/second |
+| `disk_write_bytes_per_sec` | Disk write rate | Bytes/second |
+| `disk_read_count` | Total read operations | Count |
+| `disk_write_count` | Total write operations | Count |
+
+### Network Metrics
+
+| Metric | Description | Unit |
+|--------|-------------|------|
+| `network_bytes_sent` | Cumulative bytes sent | Bytes |
+| `network_bytes_recv` | Cumulative bytes received | Bytes |
+| `network_bytes_sent_per_sec` | Network send rate | Bytes/second |
+| `network_bytes_recv_per_sec` | Network receive rate | Bytes/second |
+| `network_packets_sent` | Total packets sent | Count |
+| `network_packets_recv` | Total packets received | Count |
+| `network_errors_in` | Inbound network errors | Count |
+| `network_errors_out` | Outbound network errors | Count |
+| `active_connections` | Active network connections | Count |
+
+### System Information
+
+| Metric | Description | Type |
+|--------|-------------|------|
+| `system_uptime_seconds` | System uptime | Seconds |
+| `boot_time_unix` | System boot time | Unix timestamp |
+| `os_platform` | Operating system platform | String |
+| `os_version` | OS version | String |
+| `hostname` | System hostname | String |
+| `kernel_version` | Kernel version | String |
+| `process_count` | Number of running processes | Count |
 
 ## Supported Formats
 
@@ -232,13 +342,22 @@ server:
 
 ```json
 {
-  "cpu_percent": 45.2,
-  "ram_percent": 67.8,
-  "disk_percent": 52.3,
+  "cpu_usage_percent": 45.2,
+  "cpu_count": 8,
+  "cpu_load_1min": 2.5,
+  "ram_usage_percent": 67.8,
+  "available_ram_mb": 8192.5,
+  "disk_usage_percent": 52.3,
+  "disk_read_bytes_per_sec": 1048576,
+  "disk_write_bytes_per_sec": 524288,
+  "network_bytes_sent_per_sec": 102400,
+  "network_bytes_recv_per_sec": 204800,
+  "active_connections": 42,
+  "system_uptime_seconds": 86400,
+  "hostname": "web-server-01",
+  "process_count": 156,
   "db_connections": 42,
-  "cache_hit_rate": 95,
-  "temperature_celsius": 23.5,
-  "memory_mb": 4096
+  "cache_hit_rate": 95
 }
 ```
 
