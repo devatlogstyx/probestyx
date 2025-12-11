@@ -41,6 +41,9 @@ func Init(c *config.Config) {
 
 func CollectSystem() map[string]interface{} {
 	metrics := make(map[string]interface{})
+	var metricsMu sync.Mutex
+	var wg sync.WaitGroup
+	
 	now := time.Now()
 	
 	// Read previous metrics with lock
@@ -52,240 +55,315 @@ func CollectSystem() map[string]interface{} {
 	prevNetRecv := prevMetrics.netBytesRecv
 	metricsMutex.RUnlock()
 
+	// Create a map to check which metrics are requested
+	requestedMetrics := make(map[string]bool)
 	for _, metric := range cfg.System.Metrics {
-		switch metric {
-		case "cpu_usage_percent":
-			if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {
-				metrics["cpu_usage_percent"] = utils.Round(percent[0], 2)
-			}
-		case "cpu_usage_per_core":
-			if percent, err := cpu.Percent(time.Second, true); err == nil {
-				coreMetrics := make([]float64, len(percent))
-				for i, p := range percent {
-					coreMetrics[i] = utils.Round(p, 2)
+		requestedMetrics[metric] = true
+	}
+
+	// Helper to safely add metrics
+	addMetric := func(key string, value interface{}) {
+		metricsMu.Lock()
+		metrics[key] = value
+		metricsMu.Unlock()
+	}
+
+	// CPU metrics (these have built-in delays)
+	if requestedMetrics["cpu_usage_percent"] || requestedMetrics["cpu_usage_per_core"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if requestedMetrics["cpu_usage_percent"] {
+				if percent, err := cpu.Percent(100*time.Millisecond, false); err == nil && len(percent) > 0 {
+					addMetric("cpu_usage_percent", utils.Round(percent[0], 2))
 				}
-				metrics["cpu_usage_per_core"] = coreMetrics
 			}
-		case "cpu_count":
-			if count, err := cpu.Counts(true); err == nil {
-				metrics["cpu_count"] = count
+			
+			if requestedMetrics["cpu_usage_per_core"] {
+				if percent, err := cpu.Percent(100*time.Millisecond, true); err == nil {
+					coreMetrics := make([]float64, len(percent))
+					for i, p := range percent {
+						coreMetrics[i] = utils.Round(p, 2)
+					}
+					addMetric("cpu_usage_per_core", coreMetrics)
+				}
 			}
-		case "cpu_count_physical":
-			if count, err := cpu.Counts(false); err == nil {
-				metrics["cpu_count_physical"] = count
+		}()
+	}
+
+	// CPU info and load (fast operations)
+	if requestedMetrics["cpu_count"] || requestedMetrics["cpu_count_physical"] || 
+	   requestedMetrics["cpu_load_1min"] || requestedMetrics["cpu_load_5min"] || 
+	   requestedMetrics["cpu_load_15min"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if requestedMetrics["cpu_count"] {
+				if count, err := cpu.Counts(true); err == nil {
+					addMetric("cpu_count", count)
+				}
 			}
-		case "cpu_load_1min":
-			if avg, err := load.Avg(); err == nil {
-				metrics["cpu_load_1min"] = utils.Round(avg.Load1, 2)
+			
+			if requestedMetrics["cpu_count_physical"] {
+				if count, err := cpu.Counts(false); err == nil {
+					addMetric("cpu_count_physical", count)
+				}
 			}
-		case "cpu_load_5min":
-			if avg, err := load.Avg(); err == nil {
-				metrics["cpu_load_5min"] = utils.Round(avg.Load5, 2)
+			
+			if requestedMetrics["cpu_load_1min"] || requestedMetrics["cpu_load_5min"] || 
+			   requestedMetrics["cpu_load_15min"] {
+				if avg, err := load.Avg(); err == nil {
+					if requestedMetrics["cpu_load_1min"] {
+						addMetric("cpu_load_1min", utils.Round(avg.Load1, 2))
+					}
+					if requestedMetrics["cpu_load_5min"] {
+						addMetric("cpu_load_5min", utils.Round(avg.Load5, 2))
+					}
+					if requestedMetrics["cpu_load_15min"] {
+						addMetric("cpu_load_15min", utils.Round(avg.Load15, 2))
+					}
+				}
 			}
-		case "cpu_load_15min":
-			if avg, err := load.Avg(); err == nil {
-				metrics["cpu_load_15min"] = utils.Round(avg.Load15, 2)
-			}
-		case "ram_usage_percent":
+		}()
+	}
+
+	// Memory metrics
+	if requestedMetrics["ram_usage_percent"] || requestedMetrics["available_ram_mb"] || 
+	   requestedMetrics["total_ram_mb"] || requestedMetrics["ram_cached_mb"] || 
+	   requestedMetrics["ram_buffers_mb"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
 			if v, err := mem.VirtualMemory(); err == nil {
-				metrics["ram_usage_percent"] = utils.Round(v.UsedPercent, 2)
+				if requestedMetrics["ram_usage_percent"] {
+					addMetric("cpu_usage_percent", utils.Round(v.UsedPercent, 2))
+				}
+				if requestedMetrics["available_ram_mb"] {
+					addMetric("available_ram_mb", utils.Round(float64(v.Available)/(1024*1024), 2))
+				}
+				if requestedMetrics["total_ram_mb"] {
+					addMetric("total_ram_mb", utils.Round(float64(v.Total)/(1024*1024), 2))
+				}
+				if requestedMetrics["ram_cached_mb"] {
+					addMetric("ram_cached_mb", utils.Round(float64(v.Cached)/(1024*1024), 2))
+				}
+				if requestedMetrics["ram_buffers_mb"] {
+					addMetric("ram_buffers_mb", utils.Round(float64(v.Buffers)/(1024*1024), 2))
+				}
 			}
-		case "available_ram_mb":
-			if v, err := mem.VirtualMemory(); err == nil {
-				availableMB := float64(v.Available) / (1024 * 1024)
-				metrics["available_ram_mb"] = utils.Round(availableMB, 2)
-			}
-		case "total_ram_mb":
-			if v, err := mem.VirtualMemory(); err == nil {
-				totalMB := float64(v.Total) / (1024 * 1024)
-				metrics["total_ram_mb"] = utils.Round(totalMB, 2)
-			}
-		case "ram_cached_mb":
-			if v, err := mem.VirtualMemory(); err == nil {
-				cachedMB := float64(v.Cached) / (1024 * 1024)
-				metrics["ram_cached_mb"] = utils.Round(cachedMB, 2)
-			}
-		case "ram_buffers_mb":
-			if v, err := mem.VirtualMemory(); err == nil {
-				buffersMB := float64(v.Buffers) / (1024 * 1024)
-				metrics["ram_buffers_mb"] = utils.Round(buffersMB, 2)
-			}
-		case "swap_usage_percent":
+		}()
+	}
+
+	// Swap metrics
+	if requestedMetrics["swap_usage_percent"] || requestedMetrics["swap_total_mb"] || 
+	   requestedMetrics["swap_used_mb"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
 			if s, err := mem.SwapMemory(); err == nil {
-				metrics["swap_usage_percent"] = utils.Round(s.UsedPercent, 2)
+				if requestedMetrics["swap_usage_percent"] {
+					addMetric("swap_usage_percent", utils.Round(s.UsedPercent, 2))
+				}
+				if requestedMetrics["swap_total_mb"] {
+					addMetric("swap_total_mb", utils.Round(float64(s.Total)/(1024*1024), 2))
+				}
+				if requestedMetrics["swap_used_mb"] {
+					addMetric("swap_used_mb", utils.Round(float64(s.Used)/(1024*1024), 2))
+				}
 			}
-		case "swap_total_mb":
-			if s, err := mem.SwapMemory(); err == nil {
-				totalMB := float64(s.Total) / (1024 * 1024)
-				metrics["swap_total_mb"] = utils.Round(totalMB, 2)
-			}
-		case "swap_used_mb":
-			if s, err := mem.SwapMemory(); err == nil {
-				usedMB := float64(s.Used) / (1024 * 1024)
-				metrics["swap_used_mb"] = utils.Round(usedMB, 2)
-			}
-		case "disk_usage_percent":
+		}()
+	}
+
+	// Disk usage metrics
+	if requestedMetrics["disk_usage_percent"] || requestedMetrics["available_disk_gb"] || 
+	   requestedMetrics["total_disk_gb"] || requestedMetrics["inode_usage_percent"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
 			if usage, err := disk.Usage("/"); err == nil {
-				metrics["disk_usage_percent"] = utils.Round(usage.UsedPercent, 2)
+				if requestedMetrics["disk_usage_percent"] {
+					addMetric("cpu_usage_percent", utils.Round(usage.UsedPercent, 2))
+				}
+				if requestedMetrics["available_disk_gb"] {
+					addMetric("available_disk_gb", utils.Round(float64(usage.Free)/(1024*1024*1024), 2))
+				}
+				if requestedMetrics["total_disk_gb"] {
+					addMetric("total_disk_gb", utils.Round(float64(usage.Total)/(1024*1024*1024), 2))
+				}
+				if requestedMetrics["inode_usage_percent"] {
+					addMetric("inode_usage_percent", utils.Round(usage.InodesUsedPercent, 2))
+				}
 			}
-		case "available_disk_gb":
-			if usage, err := disk.Usage("/"); err == nil {
-				availableGB := float64(usage.Free) / (1024 * 1024 * 1024)
-				metrics["available_disk_gb"] = utils.Round(availableGB, 2)
-			}
-		case "total_disk_gb":
-			if usage, err := disk.Usage("/"); err == nil {
-				totalGB := float64(usage.Total) / (1024 * 1024 * 1024)
-				metrics["total_disk_gb"] = utils.Round(totalGB, 2)
-			}
-		case "inode_usage_percent":
-			if usage, err := disk.Usage("/"); err == nil {
-				metrics["inode_usage_percent"] = utils.Round(usage.InodesUsedPercent, 2)
-			}
-		case "disk_read_bytes":
+		}()
+	}
+
+	// Disk I/O metrics
+	diskIOMetrics := requestedMetrics["disk_read_bytes"] || requestedMetrics["disk_write_bytes"] ||
+		requestedMetrics["disk_read_bytes_per_sec"] || requestedMetrics["disk_write_bytes_per_sec"] ||
+		requestedMetrics["disk_read_count"] || requestedMetrics["disk_write_count"]
+	
+	if diskIOMetrics {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
 			if counters, err := disk.IOCounters(); err == nil {
-				var totalRead uint64
+				var totalRead, totalWrite, totalReads, totalWrites uint64
 				for _, counter := range counters {
 					totalRead += counter.ReadBytes
-				}
-				metrics["disk_read_bytes"] = totalRead
-			}
-		case "disk_write_bytes":
-			if counters, err := disk.IOCounters(); err == nil {
-				var totalWrite uint64
-				for _, counter := range counters {
 					totalWrite += counter.WriteBytes
+					totalReads += counter.ReadCount
+					totalWrites += counter.WriteCount
 				}
-				metrics["disk_write_bytes"] = totalWrite
-			}
-		case "disk_read_bytes_per_sec":
-			if counters, err := disk.IOCounters(); err == nil {
-				var totalRead uint64
-				for _, counter := range counters {
-					totalRead += counter.ReadBytes
+				
+				if requestedMetrics["disk_read_bytes"] {
+					addMetric("disk_read_bytes", totalRead)
 				}
-				if prevDiskRead > 0 && timeDelta > 0 {
+				if requestedMetrics["disk_write_bytes"] {
+					addMetric("disk_write_bytes", totalWrite)
+				}
+				if requestedMetrics["disk_read_count"] {
+					addMetric("disk_read_count", totalReads)
+				}
+				if requestedMetrics["disk_write_count"] {
+					addMetric("disk_write_count", totalWrites)
+				}
+				
+				if requestedMetrics["disk_read_bytes_per_sec"] && prevDiskRead > 0 && timeDelta > 0 {
 					bytesPerSec := float64(totalRead-prevDiskRead) / timeDelta
-					metrics["disk_read_bytes_per_sec"] = utils.Round(bytesPerSec, 2)
+					addMetric("disk_read_bytes_per_sec", utils.Round(bytesPerSec, 2))
 				}
-				// Update stored value with write lock
+				if requestedMetrics["disk_write_bytes_per_sec"] && prevDiskWrite > 0 && timeDelta > 0 {
+					bytesPerSec := float64(totalWrite-prevDiskWrite) / timeDelta
+					addMetric("disk_write_bytes_per_sec", utils.Round(bytesPerSec, 2))
+				}
+				
+				// Update stored values
 				metricsMutex.Lock()
 				prevMetrics.diskReadBytes = totalRead
-				metricsMutex.Unlock()
-			}
-		case "disk_write_bytes_per_sec":
-			if counters, err := disk.IOCounters(); err == nil {
-				var totalWrite uint64
-				for _, counter := range counters {
-					totalWrite += counter.WriteBytes
-				}
-				if prevDiskWrite > 0 && timeDelta > 0 {
-					bytesPerSec := float64(totalWrite-prevDiskWrite) / timeDelta
-					metrics["disk_write_bytes_per_sec"] = utils.Round(bytesPerSec, 2)
-				}
-				// Update stored value with write lock
-				metricsMutex.Lock()
 				prevMetrics.diskWriteBytes = totalWrite
 				metricsMutex.Unlock()
 			}
-		case "disk_read_count":
-			if counters, err := disk.IOCounters(); err == nil {
-				var totalReads uint64
-				for _, counter := range counters {
-					totalReads += counter.ReadCount
-				}
-				metrics["disk_read_count"] = totalReads
-			}
-		case "disk_write_count":
-			if counters, err := disk.IOCounters(); err == nil {
-				var totalWrites uint64
-				for _, counter := range counters {
-					totalWrites += counter.WriteCount
-				}
-				metrics["disk_write_count"] = totalWrites
-			}
-		case "network_bytes_sent":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_bytes_sent"] = counters[0].BytesSent
-			}
-		case "network_bytes_recv":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_bytes_recv"] = counters[0].BytesRecv
-			}
-		case "network_bytes_sent_per_sec":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				if prevNetSent > 0 && timeDelta > 0 {
-					bytesPerSec := float64(counters[0].BytesSent-prevNetSent) / timeDelta
-					metrics["network_bytes_sent_per_sec"] = utils.Round(bytesPerSec, 2)
-				}
-				// Update stored value with write lock
-				metricsMutex.Lock()
-				prevMetrics.netBytesSent = counters[0].BytesSent
-				metricsMutex.Unlock()
-			}
-		case "network_bytes_recv_per_sec":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				if prevNetRecv > 0 && timeDelta > 0 {
-					bytesPerSec := float64(counters[0].BytesRecv-prevNetRecv) / timeDelta
-					metrics["network_bytes_recv_per_sec"] = utils.Round(bytesPerSec, 2)
-				}
-				// Update stored value with write lock
-				metricsMutex.Lock()
-				prevMetrics.netBytesRecv = counters[0].BytesRecv
-				metricsMutex.Unlock()
-			}
-		case "network_packets_sent":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_packets_sent"] = counters[0].PacketsSent
-			}
-		case "network_packets_recv":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_packets_recv"] = counters[0].PacketsRecv
-			}
-		case "network_errors_in":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_errors_in"] = counters[0].Errin
-			}
-		case "network_errors_out":
-			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				metrics["network_errors_out"] = counters[0].Errout
-			}
-		case "active_connections":
-			if conns, err := net.Connections("all"); err == nil {
-				metrics["active_connections"] = len(conns)
-			}
-		case "process_count":
-			if procs, err := process.Processes(); err == nil {
-				metrics["process_count"] = len(procs)
-			}
-		case "system_uptime_seconds":
-			if info, err := host.Info(); err == nil {
-				metrics["system_uptime_seconds"] = float64(info.Uptime)
-			}
-		case "boot_time_unix":
-			if info, err := host.Info(); err == nil {
-				metrics["boot_time_unix"] = info.BootTime
-			}
-		case "os_platform":
-			if info, err := host.Info(); err == nil {
-				metrics["os_platform"] = info.Platform
-			}
-		case "os_version":
-			if info, err := host.Info(); err == nil {
-				metrics["os_version"] = info.PlatformVersion
-			}
-		case "hostname":
-			if info, err := host.Info(); err == nil {
-				metrics["hostname"] = info.Hostname
-			}
-		case "kernel_version":
-			if info, err := host.Info(); err == nil {
-				metrics["kernel_version"] = info.KernelVersion
-			}
-		}
+		}()
 	}
 
-	// Update timestamp with write lock
+	// Network metrics
+	netMetrics := requestedMetrics["network_bytes_sent"] || requestedMetrics["network_bytes_recv"] ||
+		requestedMetrics["network_bytes_sent_per_sec"] || requestedMetrics["network_bytes_recv_per_sec"] ||
+		requestedMetrics["network_packets_sent"] || requestedMetrics["network_packets_recv"] ||
+		requestedMetrics["network_errors_in"] || requestedMetrics["network_errors_out"]
+	
+	if netMetrics {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
+				c := counters[0]
+				
+				if requestedMetrics["network_bytes_sent"] {
+					addMetric("network_bytes_sent", c.BytesSent)
+				}
+				if requestedMetrics["network_bytes_recv"] {
+					addMetric("network_bytes_recv", c.BytesRecv)
+				}
+				if requestedMetrics["network_packets_sent"] {
+					addMetric("network_packets_sent", c.PacketsSent)
+				}
+				if requestedMetrics["network_packets_recv"] {
+					addMetric("network_packets_recv", c.PacketsRecv)
+				}
+				if requestedMetrics["network_errors_in"] {
+					addMetric("network_errors_in", c.Errin)
+				}
+				if requestedMetrics["network_errors_out"] {
+					addMetric("network_errors_out", c.Errout)
+				}
+				
+				if requestedMetrics["network_bytes_sent_per_sec"] && prevNetSent > 0 && timeDelta > 0 {
+					bytesPerSec := float64(c.BytesSent-prevNetSent) / timeDelta
+					addMetric("network_bytes_sent_per_sec", utils.Round(bytesPerSec, 2))
+				}
+				if requestedMetrics["network_bytes_recv_per_sec"] && prevNetRecv > 0 && timeDelta > 0 {
+					bytesPerSec := float64(c.BytesRecv-prevNetRecv) / timeDelta
+					addMetric("network_bytes_recv_per_sec", utils.Round(bytesPerSec, 2))
+				}
+				
+				// Update stored values
+				metricsMutex.Lock()
+				prevMetrics.netBytesSent = c.BytesSent
+				prevMetrics.netBytesRecv = c.BytesRecv
+				metricsMutex.Unlock()
+			}
+		}()
+	}
+
+	// Network connections
+	if requestedMetrics["active_connections"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if conns, err := net.Connections("all"); err == nil {
+				addMetric("active_connections", len(conns))
+			}
+		}()
+	}
+
+	// Process count
+	if requestedMetrics["process_count"] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if procs, err := process.Processes(); err == nil {
+				addMetric("process_count", len(procs))
+			}
+		}()
+	}
+
+	// Host info
+	hostMetrics := requestedMetrics["system_uptime_seconds"] || requestedMetrics["boot_time_unix"] ||
+		requestedMetrics["os_platform"] || requestedMetrics["os_version"] ||
+		requestedMetrics["hostname"] || requestedMetrics["kernel_version"]
+	
+	if hostMetrics {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			if info, err := host.Info(); err == nil {
+				if requestedMetrics["system_uptime_seconds"] {
+					addMetric("system_uptime_seconds", float64(info.Uptime))
+				}
+				if requestedMetrics["boot_time_unix"] {
+					addMetric("boot_time_unix", info.BootTime)
+				}
+				if requestedMetrics["os_platform"] {
+					addMetric("os_platform", info.Platform)
+				}
+				if requestedMetrics["os_version"] {
+					addMetric("os_version", info.PlatformVersion)
+				}
+				if requestedMetrics["hostname"] {
+					addMetric("hostname", info.Hostname)
+				}
+				if requestedMetrics["kernel_version"] {
+					addMetric("kernel_version", info.KernelVersion)
+				}
+			}
+		}()
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Update timestamp
 	metricsMutex.Lock()
 	prevMetrics.timestamp = now
 	metricsMutex.Unlock()
