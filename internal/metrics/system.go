@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync"
 	"time"
 
 	"github.com/devatlogstyx/probestyx/internal/config"
@@ -26,23 +27,36 @@ type previousMetrics struct {
 	timestamp      time.Time
 }
 
-var prevMetrics previousMetrics
+var (
+	prevMetrics  previousMetrics
+	metricsMutex sync.RWMutex
+)
 
 func Init(c *config.Config) {
 	cfg = c
+	metricsMutex.Lock()
 	prevMetrics.timestamp = time.Now()
+	metricsMutex.Unlock()
 }
 
 func CollectSystem() map[string]interface{} {
 	metrics := make(map[string]interface{})
 	now := time.Now()
+	
+	// Read previous metrics with lock
+	metricsMutex.RLock()
 	timeDelta := now.Sub(prevMetrics.timestamp).Seconds()
+	prevDiskRead := prevMetrics.diskReadBytes
+	prevDiskWrite := prevMetrics.diskWriteBytes
+	prevNetSent := prevMetrics.netBytesSent
+	prevNetRecv := prevMetrics.netBytesRecv
+	metricsMutex.RUnlock()
 
 	for _, metric := range cfg.System.Metrics {
 		switch metric {
 		case "cpu_usage_percent":
 			if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {
-				metrics["cpu_usage_percent"] = utils.Round(percent[0], 2)
+				metrics["cpu_percent"] = utils.Round(percent[0], 2)
 			}
 		case "cpu_usage_per_core":
 			if percent, err := cpu.Percent(time.Second, true); err == nil {
@@ -150,11 +164,14 @@ func CollectSystem() map[string]interface{} {
 				for _, counter := range counters {
 					totalRead += counter.ReadBytes
 				}
-				if prevMetrics.diskReadBytes > 0 && timeDelta > 0 {
-					bytesPerSec := float64(totalRead-prevMetrics.diskReadBytes) / timeDelta
+				if prevDiskRead > 0 && timeDelta > 0 {
+					bytesPerSec := float64(totalRead-prevDiskRead) / timeDelta
 					metrics["disk_read_bytes_per_sec"] = utils.Round(bytesPerSec, 2)
 				}
+				// Update stored value with write lock
+				metricsMutex.Lock()
 				prevMetrics.diskReadBytes = totalRead
+				metricsMutex.Unlock()
 			}
 		case "disk_write_bytes_per_sec":
 			if counters, err := disk.IOCounters(); err == nil {
@@ -162,11 +179,14 @@ func CollectSystem() map[string]interface{} {
 				for _, counter := range counters {
 					totalWrite += counter.WriteBytes
 				}
-				if prevMetrics.diskWriteBytes > 0 && timeDelta > 0 {
-					bytesPerSec := float64(totalWrite-prevMetrics.diskWriteBytes) / timeDelta
+				if prevDiskWrite > 0 && timeDelta > 0 {
+					bytesPerSec := float64(totalWrite-prevDiskWrite) / timeDelta
 					metrics["disk_write_bytes_per_sec"] = utils.Round(bytesPerSec, 2)
 				}
+				// Update stored value with write lock
+				metricsMutex.Lock()
 				prevMetrics.diskWriteBytes = totalWrite
+				metricsMutex.Unlock()
 			}
 		case "disk_read_count":
 			if counters, err := disk.IOCounters(); err == nil {
@@ -194,19 +214,25 @@ func CollectSystem() map[string]interface{} {
 			}
 		case "network_bytes_sent_per_sec":
 			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				if prevMetrics.netBytesSent > 0 && timeDelta > 0 {
-					bytesPerSec := float64(counters[0].BytesSent-prevMetrics.netBytesSent) / timeDelta
+				if prevNetSent > 0 && timeDelta > 0 {
+					bytesPerSec := float64(counters[0].BytesSent-prevNetSent) / timeDelta
 					metrics["network_bytes_sent_per_sec"] = utils.Round(bytesPerSec, 2)
 				}
+				// Update stored value with write lock
+				metricsMutex.Lock()
 				prevMetrics.netBytesSent = counters[0].BytesSent
+				metricsMutex.Unlock()
 			}
 		case "network_bytes_recv_per_sec":
 			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
-				if prevMetrics.netBytesRecv > 0 && timeDelta > 0 {
-					bytesPerSec := float64(counters[0].BytesRecv-prevMetrics.netBytesRecv) / timeDelta
+				if prevNetRecv > 0 && timeDelta > 0 {
+					bytesPerSec := float64(counters[0].BytesRecv-prevNetRecv) / timeDelta
 					metrics["network_bytes_recv_per_sec"] = utils.Round(bytesPerSec, 2)
 				}
+				// Update stored value with write lock
+				metricsMutex.Lock()
 				prevMetrics.netBytesRecv = counters[0].BytesRecv
+				metricsMutex.Unlock()
 			}
 		case "network_packets_sent":
 			if counters, err := net.IOCounters(false); err == nil && len(counters) > 0 {
@@ -259,8 +285,10 @@ func CollectSystem() map[string]interface{} {
 		}
 	}
 
-	// Update timestamp for next collection
+	// Update timestamp with write lock
+	metricsMutex.Lock()
 	prevMetrics.timestamp = now
+	metricsMutex.Unlock()
 
 	return metrics
 }
