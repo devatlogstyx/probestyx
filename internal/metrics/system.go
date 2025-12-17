@@ -1,3 +1,4 @@
+// internal/metrics/system.go
 package metrics
 
 import (
@@ -32,14 +33,71 @@ var (
 	metricsMutex sync.RWMutex
 )
 
+// Cache for collected metrics
+var (
+	cachedMetrics    map[string]interface{}
+	cacheTimestamp   time.Time
+	cacheMutex       sync.RWMutex
+	cacheTTL         time.Duration      // Will be set from config
+	collectionMutex  sync.Mutex         // Prevents multiple simultaneous collections
+)
+
 func Init(c *config.Config) {
 	cfg = c
 	metricsMutex.Lock()
 	prevMetrics.timestamp = time.Now()
 	metricsMutex.Unlock()
+	
+	// Set cache TTL from config, default to 15 seconds
+	if c.System.CacheTTL > 0 {
+		cacheTTL = time.Duration(c.System.CacheTTL) * time.Second
+	} else {
+		cacheTTL = 15 * time.Second
+	}
+	
+	// Initialize cache
+	cacheMutex.Lock()
+	cacheTimestamp = time.Time{} // Zero time so first request triggers collection
+	cacheMutex.Unlock()
 }
 
 func CollectSystem() map[string]interface{} {
+	// Fast path: return cached metrics if still valid
+	cacheMutex.RLock()
+	if time.Since(cacheTimestamp) < cacheTTL && cachedMetrics != nil {
+		result := cachedMetrics
+		cacheMutex.RUnlock()
+		return result
+	}
+	cacheMutex.RUnlock()
+
+	// Slow path: need to collect new metrics
+	// Use collectionMutex to ensure only ONE goroutine collects at a time
+	collectionMutex.Lock()
+	defer collectionMutex.Unlock()
+
+	// Double-check cache after acquiring lock (another goroutine might have just updated it)
+	cacheMutex.RLock()
+	if time.Since(cacheTimestamp) < cacheTTL && cachedMetrics != nil {
+		result := cachedMetrics
+		cacheMutex.RUnlock()
+		return result
+	}
+	cacheMutex.RUnlock()
+
+	// Actually collect metrics (only one request does this)
+	metrics := doActualCollection()
+
+	// Update cache
+	cacheMutex.Lock()
+	cachedMetrics = metrics
+	cacheTimestamp = time.Now()
+	cacheMutex.Unlock()
+
+	return metrics
+}
+
+func doActualCollection() map[string]interface{} {
 	metrics := make(map[string]interface{})
 	var metricsMu sync.Mutex
 	var wg sync.WaitGroup
@@ -139,7 +197,7 @@ func CollectSystem() map[string]interface{} {
 			
 			if v, err := mem.VirtualMemory(); err == nil {
 				if requestedMetrics["ram_usage_percent"] {
-					addMetric("cpu_usage_percent", utils.Round(v.UsedPercent, 2))
+					addMetric("ram_usage_percent", utils.Round(v.UsedPercent, 2))
 				}
 				if requestedMetrics["available_ram_mb"] {
 					addMetric("available_ram_mb", utils.Round(float64(v.Available)/(1024*1024), 2))
@@ -187,7 +245,7 @@ func CollectSystem() map[string]interface{} {
 			
 			if usage, err := disk.Usage("/"); err == nil {
 				if requestedMetrics["disk_usage_percent"] {
-					addMetric("cpu_usage_percent", utils.Round(usage.UsedPercent, 2))
+					addMetric("disk_usage_percent", utils.Round(usage.UsedPercent, 2))
 				}
 				if requestedMetrics["available_disk_gb"] {
 					addMetric("available_disk_gb", utils.Round(float64(usage.Free)/(1024*1024*1024), 2))

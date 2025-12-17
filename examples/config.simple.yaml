@@ -1,6 +1,7 @@
 # Simple configuration without authentication
 server:
   port: 9200
+  cache_ttl: 15
   # secret: ""  # No authentication
 
 system:

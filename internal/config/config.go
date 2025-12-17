@@ -13,9 +13,10 @@ type ServerConfig struct {
 }
 
 type SystemConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Name    string   `yaml:"name"`
-	Metrics []string `yaml:"metrics"`
+    Enabled  bool     `yaml:"enabled"`
+    Name     string   `yaml:"name"`
+    CacheTTL int      `yaml:"cache_ttl"`  // Add this line
+    Metrics  []string `yaml:"metrics"`
 }
 
 type ScraperConfig struct {
