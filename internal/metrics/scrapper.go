@@ -5,12 +5,33 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/devatlogstyx/probestyx/internal/config"
 	"github.com/devatlogstyx/probestyx/internal/parsers"
 	"github.com/devatlogstyx/probestyx/internal/utils"
 )
+
+// Shared HTTP client - created once
+var (
+	httpClient *http.Client
+	once       sync.Once
+)
+
+func getHTTPClient() *http.Client {
+	once.Do(func() {
+		httpClient = &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+	})
+	return httpClient
+}
 
 func CollectScraper(scraper config.ScraperConfig) (map[string]interface{}, error) {
 	var rawData string
@@ -86,17 +107,14 @@ func CollectScraper(scraper config.ScraperConfig) (map[string]interface{}, error
 }
 
 func fetchURL(url string) (string, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-	
-	resp, err := client.Get(url)
+	resp, err := getHTTPClient().Get(url)  // Use shared client
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Limit response size
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max
 	if err != nil {
 		return "", err
 	}

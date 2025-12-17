@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/devatlogstyx/probestyx/internal/auth"
 	"github.com/devatlogstyx/probestyx/internal/config"
@@ -36,11 +37,11 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := make(map[string]interface{})
+	var mu sync.Mutex // Protect result map from concurrent writes
 
 	// Collect system metrics
 	if cfg.System.Enabled {
 		sysMetrics := metrics.CollectSystem()
-		// Use the configured name or default to "system"
 		systemName := cfg.System.Name
 		if systemName == "" {
 			systemName = "system"
@@ -48,21 +49,34 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		result[systemName] = sysMetrics
 	}
 
-	// Collect from scrapers
+	// Collect from scrapers in parallel
+	var wg sync.WaitGroup
 	for _, scraper := range cfg.Scrapers {
-		scraperMetrics, err := metrics.CollectScraper(scraper)
-		if err != nil {
-			log.Printf("Error collecting from %s: %v (skipping)", scraper.Name, err)
-			continue
-		}
-
-		// Check if this scraper name already exists
-		if _, exists := result[scraper.Name]; exists {
-			log.Printf("WARN: Scraper name '%s' already exists, overwriting previous value", scraper.Name)
-		}
+		wg.Add(1)
 		
-		result[scraper.Name] = scraperMetrics
+		// Capture scraper in closure
+		go func(s config.ScraperConfig) {
+			defer wg.Done()
+			
+			scraperMetrics, err := metrics.CollectScraper(s)
+			if err != nil {
+				log.Printf("Error collecting from %s: %v (skipping)", s.Name, err)
+				return
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			
+			// Check if this scraper name already exists
+			if _, exists := result[s.Name]; exists {
+				log.Printf("WARN: Scraper name '%s' already exists, overwriting previous value", s.Name)
+			}
+			
+			result[s.Name] = scraperMetrics
+		}(scraper)
 	}
+
+	wg.Wait() // Wait for all scrapers to complete
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
