@@ -96,8 +96,14 @@ BINARY_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/pr
 echo "Downloading from $BINARY_URL..."
 
 TEMP_BINARY="/tmp/probestyx-download"
-if ! curl -L -o "$TEMP_BINARY" "$BINARY_URL"; then
-    echo -e "${RED}Error: Failed to download binary${NC}"
+if ! curl -L -f -o "$TEMP_BINARY" "$BINARY_URL"; then
+    echo -e "${RED}Error: Failed to download binary. The URL might be incorrect or the release doesn't exist.${NC}"
+    exit 1
+fi
+
+if ! file "$TEMP_BINARY" | grep -qE 'ELF|Mach-O'; then
+    echo -e "${RED}Error: Downloaded file is not a valid binary! Check the GitHub release assets.${NC}"
+    rm "$TEMP_BINARY"
     exit 1
 fi
 
