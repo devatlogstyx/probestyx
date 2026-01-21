@@ -26,52 +26,62 @@ type previousMetrics struct {
 	diskWriteBytes uint64
 	netBytesSent   uint64
 	netBytesRecv   uint64
-	timestamp      int64 // Use Unix nano for atomic operations
+	timestamp      int64
 }
 
 var prevMetrics previousMetrics
 
 // Cache for collected metrics
 var (
-	cachedMetrics   atomic.Value // Stores map[string]interface{}
-	cacheTimestamp  atomic.Int64 // Unix nano timestamp
-	cacheTTL        time.Duration
+	cachedMetrics   atomic.Value
+	cacheTimestamp  atomic.Int64
+	cacheTTL        int64 // Store as nanoseconds for faster comparison
 	collectionMutex sync.Mutex
 )
 
-// Pre-parsed metric groups for faster lookup
+// Pre-parsed metric lookup
+var requestedMetrics map[string]bool
+
+// Pre-parsed metric groups
 type metricGroups struct {
-	cpuUsage      bool
-	cpuInfo       bool
-	memory        bool
-	swap          bool
-	diskUsage     bool
-	diskIO        bool
-	network       bool
-	netConn       bool
-	processCount  bool
-	hostInfo      bool
+	cpuUsage     bool
+	cpuInfo      bool
+	memory       bool
+	swap         bool
+	diskUsage    bool
+	diskIO       bool
+	network      bool
+	netConn      bool
+	processCount bool
+	hostInfo     bool
 }
 
 var groups metricGroups
+
+// Constants for conversions (pre-calculated)
+const (
+	bytesToMB = 1.0 / 1048576.0
+	bytesToGB = 1.0 / 1073741824.0
+)
 
 func Init(c *config.Config) {
 	cfg = c
 	atomic.StoreInt64(&prevMetrics.timestamp, time.Now().UnixNano())
 	
-	// Set cache TTL from config, default to 15 seconds
+	// Set cache TTL as nanoseconds for faster comparison
 	if c.System.CacheTTL > 0 {
-		cacheTTL = time.Duration(c.System.CacheTTL) * time.Second
+		cacheTTL = int64(c.System.CacheTTL * 1e9)
 	} else {
-		cacheTTL = 15 * time.Second
+		cacheTTL = 15 * 1e9
 	}
 	
-	// Pre-parse requested metrics into groups (done once at startup)
-	requestedMetrics := make(map[string]bool, len(c.System.Metrics))
+	// Pre-parse requested metrics into a map (done once at startup)
+	requestedMetrics = make(map[string]bool, len(c.System.Metrics))
 	for _, metric := range c.System.Metrics {
 		requestedMetrics[metric] = true
 	}
 	
+	// Pre-parse metric groups
 	groups.cpuUsage = requestedMetrics["cpu_usage_percent"] || requestedMetrics["cpu_usage_per_core"]
 	groups.cpuInfo = requestedMetrics["cpu_count"] || requestedMetrics["cpu_count_physical"] ||
 		requestedMetrics["cpu_load_1min"] || requestedMetrics["cpu_load_5min"] || requestedMetrics["cpu_load_15min"]
@@ -93,19 +103,17 @@ func Init(c *config.Config) {
 		requestedMetrics["os_platform"] || requestedMetrics["os_version"] ||
 		requestedMetrics["hostname"] || requestedMetrics["kernel_version"]
 	
-	// Initialize cache timestamp to zero
 	cacheTimestamp.Store(0)
 }
 
 func CollectSystem() map[string]interface{} {
 	// Fast path: return cached metrics if still valid
 	cachedTime := cacheTimestamp.Load()
-	if cachedTime > 0 {
-		elapsed := time.Since(time.Unix(0, cachedTime))
-		if elapsed < cacheTTL {
-			if cached := cachedMetrics.Load(); cached != nil {
-				return cached.(map[string]interface{})
-			}
+	nowNano := time.Now().UnixNano()
+	
+	if cachedTime > 0 && (nowNano-cachedTime) < cacheTTL {
+		if cached := cachedMetrics.Load(); cached != nil {
+			return cached.(map[string]interface{})
 		}
 	}
 
@@ -115,65 +123,62 @@ func CollectSystem() map[string]interface{} {
 
 	// Double-check cache after acquiring lock
 	cachedTime = cacheTimestamp.Load()
-	if cachedTime > 0 {
-		elapsed := time.Since(time.Unix(0, cachedTime))
-		if elapsed < cacheTTL {
-			if cached := cachedMetrics.Load(); cached != nil {
-				return cached.(map[string]interface{})
-			}
+	nowNano = time.Now().UnixNano()
+	if cachedTime > 0 && (nowNano-cachedTime) < cacheTTL {
+		if cached := cachedMetrics.Load(); cached != nil {
+			return cached.(map[string]interface{})
 		}
 	}
 
 	// Actually collect metrics
-	metrics := doActualCollection()
+	metrics := doActualCollection(nowNano)
 
 	// Update cache atomically
 	cachedMetrics.Store(metrics)
-	cacheTimestamp.Store(time.Now().UnixNano())
+	cacheTimestamp.Store(nowNano)
 
 	return metrics
 }
 
-func doActualCollection() map[string]interface{} {
-	// Pre-allocate map with estimated capacity
-	metrics := make(map[string]interface{}, 32)
-	var metricsMu sync.Mutex
-	var wg sync.WaitGroup
+func doActualCollection(nowNano int64) map[string]interface{} {
+	// Pre-allocate map with exact capacity based on requested metrics
+	capacity := len(cfg.System.Metrics)
+	metrics := make(map[string]interface{}, capacity)
 	
-	now := time.Now()
-	nowNano := now.UnixNano()
+	// Use a pool of result channels to avoid allocations
+	type result struct {
+		key   string
+		value interface{}
+	}
+	resultChan := make(chan result, capacity)
+	
+	var wg sync.WaitGroup
 	
 	// Read previous metrics atomically
 	prevTimestamp := atomic.LoadInt64(&prevMetrics.timestamp)
-	timeDelta := float64(nowNano-prevTimestamp) / 1e9
+	timeDelta := float64(nowNano-prevTimestamp) * 1e-9
 	prevDiskRead := atomic.LoadUint64(&prevMetrics.diskReadBytes)
 	prevDiskWrite := atomic.LoadUint64(&prevMetrics.diskWriteBytes)
 	prevNetSent := atomic.LoadUint64(&prevMetrics.netBytesSent)
 	prevNetRecv := atomic.LoadUint64(&prevMetrics.netBytesRecv)
 
-	// Create a map to check which metrics are requested
-	requestedMetrics := make(map[string]bool, len(cfg.System.Metrics))
-	for _, metric := range cfg.System.Metrics {
-		requestedMetrics[metric] = true
+	// Helper to send metrics to channel
+	send := func(key string, value interface{}) {
+		resultChan <- result{key, value}
 	}
 
-	// Helper to safely add metrics (using pointer to reduce allocations)
-	addMetric := func(key string, value interface{}) {
-		metricsMu.Lock()
-		metrics[key] = value
-		metricsMu.Unlock()
-	}
-
-	// CPU metrics - group related operations
+	// CPU metrics
 	if groups.cpuUsage {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			
-			if requestedMetrics["cpu_usage_percent"] && requestedMetrics["cpu_usage_per_core"] {
-				// Collect both in one call
+			wantPercent := requestedMetrics["cpu_usage_percent"]
+			wantPerCore := requestedMetrics["cpu_usage_per_core"]
+			
+			if wantPercent && wantPerCore {
+				// Collect per-core and calculate average
 				if percent, err := cpu.Percent(100*time.Millisecond, true); err == nil && len(percent) > 0 {
-					// Overall is average of cores
 					var total float64
 					coreMetrics := make([]float64, len(percent))
 					for i, p := range percent {
@@ -181,20 +186,20 @@ func doActualCollection() map[string]interface{} {
 						coreMetrics[i] = rounded
 						total += rounded
 					}
-					addMetric("cpu_usage_per_core", coreMetrics)
-					addMetric("cpu_usage_percent", utils.Round(total/float64(len(percent)), 2))
+					send("cpu_usage_per_core", coreMetrics)
+					send("cpu_usage_percent", utils.Round(total/float64(len(percent)), 2))
 				}
-			} else if requestedMetrics["cpu_usage_percent"] {
+			} else if wantPercent {
 				if percent, err := cpu.Percent(100*time.Millisecond, false); err == nil && len(percent) > 0 {
-					addMetric("cpu_usage_percent", utils.Round(percent[0], 2))
+					send("cpu_usage_percent", utils.Round(percent[0], 2))
 				}
-			} else if requestedMetrics["cpu_usage_per_core"] {
+			} else if wantPerCore {
 				if percent, err := cpu.Percent(100*time.Millisecond, true); err == nil {
 					coreMetrics := make([]float64, len(percent))
 					for i, p := range percent {
 						coreMetrics[i] = utils.Round(p, 2)
 					}
-					addMetric("cpu_usage_per_core", coreMetrics)
+					send("cpu_usage_per_core", coreMetrics)
 				}
 			}
 		}()
@@ -206,30 +211,28 @@ func doActualCollection() map[string]interface{} {
 		go func() {
 			defer wg.Done()
 			
-			if requestedMetrics["cpu_count"] || requestedMetrics["cpu_count_physical"] {
-				// Collect both counts if needed
-				if requestedMetrics["cpu_count"] {
-					if count, err := cpu.Counts(true); err == nil {
-						addMetric("cpu_count", count)
-					}
+			if requestedMetrics["cpu_count"] {
+				if count, err := cpu.Counts(true); err == nil {
+					send("cpu_count", count)
 				}
-				if requestedMetrics["cpu_count_physical"] {
-					if count, err := cpu.Counts(false); err == nil {
-						addMetric("cpu_count_physical", count)
-					}
+			}
+			if requestedMetrics["cpu_count_physical"] {
+				if count, err := cpu.Counts(false); err == nil {
+					send("cpu_count_physical", count)
 				}
 			}
 			
-			if requestedMetrics["cpu_load_1min"] || requestedMetrics["cpu_load_5min"] || requestedMetrics["cpu_load_15min"] {
+			needLoad := requestedMetrics["cpu_load_1min"] || requestedMetrics["cpu_load_5min"] || requestedMetrics["cpu_load_15min"]
+			if needLoad {
 				if avg, err := load.Avg(); err == nil {
 					if requestedMetrics["cpu_load_1min"] {
-						addMetric("cpu_load_1min", utils.Round(avg.Load1, 2))
+						send("cpu_load_1min", utils.Round(avg.Load1, 2))
 					}
 					if requestedMetrics["cpu_load_5min"] {
-						addMetric("cpu_load_5min", utils.Round(avg.Load5, 2))
+						send("cpu_load_5min", utils.Round(avg.Load5, 2))
 					}
 					if requestedMetrics["cpu_load_15min"] {
-						addMetric("cpu_load_15min", utils.Round(avg.Load15, 2))
+						send("cpu_load_15min", utils.Round(avg.Load15, 2))
 					}
 				}
 			}
@@ -244,19 +247,19 @@ func doActualCollection() map[string]interface{} {
 			
 			if v, err := mem.VirtualMemory(); err == nil {
 				if requestedMetrics["ram_usage_percent"] {
-					addMetric("ram_usage_percent", utils.Round(v.UsedPercent, 2))
+					send("ram_usage_percent", utils.Round(v.UsedPercent, 2))
 				}
 				if requestedMetrics["available_ram_mb"] {
-					addMetric("available_ram_mb", utils.Round(float64(v.Available)/1048576, 2))
+					send("available_ram_mb", utils.Round(float64(v.Available)*bytesToMB, 2))
 				}
 				if requestedMetrics["total_ram_mb"] {
-					addMetric("total_ram_mb", utils.Round(float64(v.Total)/1048576, 2))
+					send("total_ram_mb", utils.Round(float64(v.Total)*bytesToMB, 2))
 				}
 				if requestedMetrics["ram_cached_mb"] {
-					addMetric("ram_cached_mb", utils.Round(float64(v.Cached)/1048576, 2))
+					send("ram_cached_mb", utils.Round(float64(v.Cached)*bytesToMB, 2))
 				}
 				if requestedMetrics["ram_buffers_mb"] {
-					addMetric("ram_buffers_mb", utils.Round(float64(v.Buffers)/1048576, 2))
+					send("ram_buffers_mb", utils.Round(float64(v.Buffers)*bytesToMB, 2))
 				}
 			}
 		}()
@@ -270,13 +273,13 @@ func doActualCollection() map[string]interface{} {
 			
 			if s, err := mem.SwapMemory(); err == nil {
 				if requestedMetrics["swap_usage_percent"] {
-					addMetric("swap_usage_percent", utils.Round(s.UsedPercent, 2))
+					send("swap_usage_percent", utils.Round(s.UsedPercent, 2))
 				}
 				if requestedMetrics["swap_total_mb"] {
-					addMetric("swap_total_mb", utils.Round(float64(s.Total)/1048576, 2))
+					send("swap_total_mb", utils.Round(float64(s.Total)*bytesToMB, 2))
 				}
 				if requestedMetrics["swap_used_mb"] {
-					addMetric("swap_used_mb", utils.Round(float64(s.Used)/1048576, 2))
+					send("swap_used_mb", utils.Round(float64(s.Used)*bytesToMB, 2))
 				}
 			}
 		}()
@@ -290,16 +293,16 @@ func doActualCollection() map[string]interface{} {
 			
 			if usage, err := disk.Usage("/"); err == nil {
 				if requestedMetrics["disk_usage_percent"] {
-					addMetric("disk_usage_percent", utils.Round(usage.UsedPercent, 2))
+					send("disk_usage_percent", utils.Round(usage.UsedPercent, 2))
 				}
 				if requestedMetrics["available_disk_gb"] {
-					addMetric("available_disk_gb", utils.Round(float64(usage.Free)/1073741824, 2))
+					send("available_disk_gb", utils.Round(float64(usage.Free)*bytesToGB, 2))
 				}
 				if requestedMetrics["total_disk_gb"] {
-					addMetric("total_disk_gb", utils.Round(float64(usage.Total)/1073741824, 2))
+					send("total_disk_gb", utils.Round(float64(usage.Total)*bytesToGB, 2))
 				}
 				if requestedMetrics["inode_usage_percent"] {
-					addMetric("inode_usage_percent", utils.Round(usage.InodesUsedPercent, 2))
+					send("inode_usage_percent", utils.Round(usage.InodesUsedPercent, 2))
 				}
 			}
 		}()
@@ -321,28 +324,27 @@ func doActualCollection() map[string]interface{} {
 				}
 				
 				if requestedMetrics["disk_read_bytes"] {
-					addMetric("disk_read_bytes", totalRead)
+					send("disk_read_bytes", totalRead)
 				}
 				if requestedMetrics["disk_write_bytes"] {
-					addMetric("disk_write_bytes", totalWrite)
+					send("disk_write_bytes", totalWrite)
 				}
 				if requestedMetrics["disk_read_count"] {
-					addMetric("disk_read_count", totalReads)
+					send("disk_read_count", totalReads)
 				}
 				if requestedMetrics["disk_write_count"] {
-					addMetric("disk_write_count", totalWrites)
+					send("disk_write_count", totalWrites)
 				}
 				
 				if requestedMetrics["disk_read_bytes_per_sec"] && prevDiskRead > 0 && timeDelta > 0 {
 					bytesPerSec := float64(totalRead-prevDiskRead) / timeDelta
-					addMetric("disk_read_bytes_per_sec", utils.Round(bytesPerSec, 2))
+					send("disk_read_bytes_per_sec", utils.Round(bytesPerSec, 2))
 				}
 				if requestedMetrics["disk_write_bytes_per_sec"] && prevDiskWrite > 0 && timeDelta > 0 {
 					bytesPerSec := float64(totalWrite-prevDiskWrite) / timeDelta
-					addMetric("disk_write_bytes_per_sec", utils.Round(bytesPerSec, 2))
+					send("disk_write_bytes_per_sec", utils.Round(bytesPerSec, 2))
 				}
 				
-				// Update stored values atomically
 				atomic.StoreUint64(&prevMetrics.diskReadBytes, totalRead)
 				atomic.StoreUint64(&prevMetrics.diskWriteBytes, totalWrite)
 			}
@@ -359,34 +361,33 @@ func doActualCollection() map[string]interface{} {
 				c := counters[0]
 				
 				if requestedMetrics["network_bytes_sent"] {
-					addMetric("network_bytes_sent", c.BytesSent)
+					send("network_bytes_sent", c.BytesSent)
 				}
 				if requestedMetrics["network_bytes_recv"] {
-					addMetric("network_bytes_recv", c.BytesRecv)
+					send("network_bytes_recv", c.BytesRecv)
 				}
 				if requestedMetrics["network_packets_sent"] {
-					addMetric("network_packets_sent", c.PacketsSent)
+					send("network_packets_sent", c.PacketsSent)
 				}
 				if requestedMetrics["network_packets_recv"] {
-					addMetric("network_packets_recv", c.PacketsRecv)
+					send("network_packets_recv", c.PacketsRecv)
 				}
 				if requestedMetrics["network_errors_in"] {
-					addMetric("network_errors_in", c.Errin)
+					send("network_errors_in", c.Errin)
 				}
 				if requestedMetrics["network_errors_out"] {
-					addMetric("network_errors_out", c.Errout)
+					send("network_errors_out", c.Errout)
 				}
 				
 				if requestedMetrics["network_bytes_sent_per_sec"] && prevNetSent > 0 && timeDelta > 0 {
 					bytesPerSec := float64(c.BytesSent-prevNetSent) / timeDelta
-					addMetric("network_bytes_sent_per_sec", utils.Round(bytesPerSec, 2))
+					send("network_bytes_sent_per_sec", utils.Round(bytesPerSec, 2))
 				}
 				if requestedMetrics["network_bytes_recv_per_sec"] && prevNetRecv > 0 && timeDelta > 0 {
 					bytesPerSec := float64(c.BytesRecv-prevNetRecv) / timeDelta
-					addMetric("network_bytes_recv_per_sec", utils.Round(bytesPerSec, 2))
+					send("network_bytes_recv_per_sec", utils.Round(bytesPerSec, 2))
 				}
 				
-				// Update stored values atomically
 				atomic.StoreUint64(&prevMetrics.netBytesSent, c.BytesSent)
 				atomic.StoreUint64(&prevMetrics.netBytesRecv, c.BytesRecv)
 			}
@@ -398,9 +399,8 @@ func doActualCollection() map[string]interface{} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
 			if conns, err := net.Connections("all"); err == nil {
-				addMetric("active_connections", len(conns))
+				send("active_connections", len(conns))
 			}
 		}()
 	}
@@ -410,9 +410,8 @@ func doActualCollection() map[string]interface{} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
 			if procs, err := process.Processes(); err == nil {
-				addMetric("process_count", len(procs))
+				send("process_count", len(procs))
 			}
 		}()
 	}
@@ -425,29 +424,37 @@ func doActualCollection() map[string]interface{} {
 			
 			if info, err := host.Info(); err == nil {
 				if requestedMetrics["system_uptime_seconds"] {
-					addMetric("system_uptime_seconds", float64(info.Uptime))
+					send("system_uptime_seconds", float64(info.Uptime))
 				}
 				if requestedMetrics["boot_time_unix"] {
-					addMetric("boot_time_unix", info.BootTime)
+					send("boot_time_unix", info.BootTime)
 				}
 				if requestedMetrics["os_platform"] {
-					addMetric("os_platform", info.Platform)
+					send("os_platform", info.Platform)
 				}
 				if requestedMetrics["os_version"] {
-					addMetric("os_version", info.PlatformVersion)
+					send("os_version", info.PlatformVersion)
 				}
 				if requestedMetrics["hostname"] {
-					addMetric("hostname", info.Hostname)
+					send("hostname", info.Hostname)
 				}
 				if requestedMetrics["kernel_version"] {
-					addMetric("kernel_version", info.KernelVersion)
+					send("kernel_version", info.KernelVersion)
 				}
 			}
 		}()
 	}
 
-	// Wait for all goroutines to complete
-	wg.Wait()
+	// Collect results from channel in a separate goroutine
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect all results from channel (no mutex needed)
+	for r := range resultChan {
+		metrics[r.key] = r.value
+	}
 
 	// Update timestamp atomically
 	atomic.StoreInt64(&prevMetrics.timestamp, nowNano)
