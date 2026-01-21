@@ -92,7 +92,7 @@ fi
 echo -e "${GREEN}Latest version: $LATEST_VERSION${NC}"
 
 # Download binary
-BINARY_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/probestyx-$OS-$ARCH"
+BINARY_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_VERSION/probestyx-$LATEST_VERSION-$OS-$ARCH"
 echo "Downloading from $BINARY_URL..."
 
 TEMP_BINARY="/tmp/probestyx-download"
