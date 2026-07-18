@@ -8,8 +8,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port   int    `yaml:"port"`
-	Secret string `yaml:"secret"`
+	Port      int      `yaml:"port"`
+	Secret    string   `yaml:"secret"`
+	Consumers []string `yaml:"consumers,omitempty"` // allowlist of ?callerId= values for per-consumer log-tailing state
 }
 
 type SystemConfig struct {
@@ -27,11 +28,13 @@ type ScraperConfig struct {
 }
 
 type SourceConfig struct {
-	Type    string `yaml:"type"` // url, file
-	URL     string `yaml:"url,omitempty"`
-	Path    string `yaml:"path,omitempty"`
-	Format  string `yaml:"format"` // json, prometheus, raw
-	Pattern string `yaml:"pattern,omitempty"`
+	Type     string `yaml:"type"` // url, file, command
+	URL      string `yaml:"url,omitempty"`
+	Path     string `yaml:"path,omitempty"`
+	Command  string `yaml:"command,omitempty"`  // for type: command
+	Format   string `yaml:"format"`              // json, prometheus, raw, log
+	Pattern  string `yaml:"pattern,omitempty"`   // for format: raw/log
+	MaxLines int    `yaml:"max_lines,omitempty"` // for format: log, default 100
 }
 
 type MetricMap struct {

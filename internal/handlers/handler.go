@@ -24,16 +24,47 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// resolveConsumerID maps the request's ?callerId= to the state bucket format: log
+// scrapers should tail from. An empty callerId (the common case) always maps to
+// "default". A non-empty callerId is only honored if it's on the server.consumers
+// allowlist - without that allowlist configured, per-consumer tracking is off and
+// arbitrary caller-supplied IDs are ignored, so an unauthenticated caller can't
+// grow the tailing-state map by making up new IDs.
+func resolveConsumerID(r *http.Request) (string, bool) {
+	callerID := r.URL.Query().Get("callerId")
+	if callerID == "" {
+		return "default", true
+	}
+
+	if len(cfg.Server.Consumers) == 0 {
+		return "default", true
+	}
+
+	for _, allowed := range cfg.Server.Consumers {
+		if allowed == callerID {
+			return callerID, true
+		}
+	}
+
+	return "", false
+}
+
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Log who is requesting metrics
 	log.Printf("Metrics request from %s - User-Agent: %s", r.RemoteAddr, r.UserAgent())
-	
+
 	// Validate signature only if secret is configured
 	if cfg.Server.Secret != "" {
 		if !auth.ValidateSignature(r) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	consumerID, ok := resolveConsumerID(r)
+	if !ok {
+		http.Error(w, "unknown callerId", http.StatusBadRequest)
+		return
 	}
 
 	result := make(map[string]interface{})
@@ -58,7 +89,7 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		go func(s config.ScraperConfig) {
 			defer wg.Done()
 			
-			scraperMetrics, err := metrics.CollectScraper(s)
+			scraperMetrics, err := metrics.CollectScraper(s, consumerID)
 			if err != nil {
 				log.Printf("Error collecting from %s: %v (skipping)", s.Name, err)
 				return

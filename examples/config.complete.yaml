@@ -3,6 +3,14 @@ server:
   cache_ttl: 15
   #secret: "your-secret-key-here"  # Leave empty or remove for no authentication
 
+  # Optional: only needed if more than one monitoring backend polls this instance
+  # and uses the format: log scrapers below (nginx_errors/docker_errors). Each
+  # listed ID gets its own independent tailing position via ?callerId=<id> -
+  # see the README's "Per-Consumer Tailing" section.
+  # consumers:
+  #   - logstyx-prod
+  #   - staging-poller
+
 system:
   enabled: true
   metrics:
@@ -165,6 +173,38 @@ scrapers:
         name: "error_count"
       - match: "severity"
         name: "error_severity"
+
+  # Example 7b: nginx error log - list only new matching lines since the last
+  # scrape, plus a count. File sources are tailed automatically: the first
+  # scrape after startup seeds the read position at end-of-file (reports
+  # nothing), and each scrape after that only sees newly appended lines.
+  - name: nginx_errors
+    source:
+      type: file
+      path: "/var/log/nginx/error.log"
+      format: log
+      max_lines: 50          # cap on lines returned per scrape; count still reflects the true total
+      # pattern: '\[error\]' # optional regex; default matches lines containing "error" (case-insensitive)
+    metrics:
+      - match: "count"
+        name: "nginx_error_count"
+      - match: "lines"
+        name: "nginx_error_lines"
+
+  # Example 7c: Docker container logs - list only new matching lines since the
+  # last scrape. {{since}} is substituted with the timestamp of this scraper's
+  # last successful run, so each scrape only asks docker for what's new.
+  - name: docker_errors
+    source:
+      type: command
+      command: "docker logs --since {{since}} --tail 1000 my-container 2>&1"
+      format: log
+      max_lines: 50
+    metrics:
+      - match: "count"
+        name: "docker_error_count"
+      - match: "lines"
+        name: "docker_error_lines"
 
   # Example 8: Custom application metrics (JSON)
   - name: webapp_metrics

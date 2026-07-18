@@ -75,6 +75,57 @@ func ParseRaw(data string, pattern string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// ParseLog scans text line-by-line and collects the ones that look like errors.
+// If pattern is set, it's used as a regex line filter; otherwise lines are matched
+// case-insensitively against the word "error" (covers nginx's "[error]" and
+// Docker/app logs that just print "Error: ..."). Returns:
+//   - "count": total number of matching lines
+//   - "lines": up to maxLines matching lines (oldest kept first), so payloads stay bounded
+func ParseLog(data string, pattern string, maxLines int) (map[string]interface{}, error) {
+	var re *regexp.Regexp
+	var err error
+	if pattern != "" {
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if maxLines <= 0 {
+		maxLines = 100
+	}
+
+	lines := strings.Split(data, "\n")
+	matched := make([]string, 0, maxLines)
+	count := 0
+
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+
+		var isMatch bool
+		if re != nil {
+			isMatch = re.MatchString(line)
+		} else {
+			isMatch = strings.Contains(strings.ToLower(line), "error")
+		}
+
+		if isMatch {
+			count++
+			if len(matched) < maxLines {
+				matched = append(matched, line)
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"count": float64(count),
+		"lines": matched,
+	}, nil
+}
+
 func ApplyFilters(data map[string]interface{}, filter *config.FilterConfig) map[string]interface{} {
 	result := make(map[string]interface{})
 

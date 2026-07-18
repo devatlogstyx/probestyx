@@ -60,6 +60,7 @@ irm https://raw.githubusercontent.com/devatlogstyx/probestyx/main/install.ps1 | 
 server:
   port: 9100
   secret: "optional-secret-key"  # Leave empty for no auth
+  consumers: []                 # optional allowlist for ?callerId= (see Per-Consumer Tailing)
 
 system:
   enabled: true
@@ -118,11 +119,13 @@ system:
 scrapers:
   - name: scraper_name
     source:
-      type: url|file
-      url: "http://..."      # for type: url
-      path: "/path/to/file"  # for type: file
-      format: json|prometheus|raw
-      pattern: "regex"       # for format: raw
+      type: url|file|command
+      url: "http://..."        # for type: url
+      path: "/path/to/file"    # for type: file
+      command: "shell command" # for type: command
+      format: json|prometheus|raw|log
+      pattern: "regex"         # for format: raw/log
+      max_lines: 100           # for format: log
     metrics:
       - path: "json.path"    # for JSON
         match: "metric_name" # for Prometheus/raw
@@ -264,7 +267,100 @@ node_cpu_seconds_total{cpu="0",mode="idle"} 12345.67
 node_memory_MemAvailable_bytes 4294967296
 ```
 
-### 3. Raw Format
+### 3. Log Format
+
+Scans a text source line-by-line and returns the lines that look like errors, plus a count. Unlike `raw` (which collapses matches into single key/value pairs), `log` is built for grepping error lines out of log files or command output — e.g. an nginx `error.log` file, or the output of `docker logs`.
+
+- If `pattern` is set, it's used as a regex to test each line.
+- If `pattern` is omitted, lines are matched case-insensitively against the word `error` (covers nginx's `[error]` and typical `Error: ...` app/Docker output).
+- `max_lines` caps how many matching lines are returned per scrape (default 100).
+
+Produces two values you can map: `count` and `lines`.
+
+**Only new lines are reported each scrape** — not everything currently sitting in the log:
+
+- `type: file` sources are tailed: probestyx remembers how far into the file it has already read. The first scrape after startup seeds that position at the current end of the file (so it doesn't dump the whole historical log on boot) and reports nothing; every scrape after that only sees lines appended since the previous one. If the file shrinks (log rotation/truncation), it detects that and starts over from the beginning of the new file.
+- `type: command` sources (e.g. `docker logs`) have no seekable position, so instead you opt in with a `{{since}}` placeholder in the command — it's substituted with the timestamp (RFC3339) of that scraper's last successful run, e.g. `docker logs --since {{since}} --tail 1000 my-container 2>&1`. Without `{{since}}` in the command, it re-runs and re-scans the full output every time (matching plain `raw`/`json` command sources).
+- This state lives in memory only, per scraper: a probestyx restart resets tailing to "start from now." If more than one separate consumer polls the same `/metrics` endpoint, they'd race over a single shared position by default — see **Per-Consumer Tailing** below to give each consumer its own independent view.
+
+### Per-Consumer Tailing
+
+If a single probestyx instance is polled by more than one independent monitoring backend, each needs its own "what's new since I last looked" position — otherwise whichever one happens to poll first after a new error line appears "consumes" it, and the others never see it.
+
+Declare the expected consumers in `server.consumers`, then have each one pass its identity as `?callerId=`:
+
+```yaml
+server:
+  port: 9100
+  consumers:
+    - logstyx-prod
+    - staging-poller
+```
+
+```bash
+curl "http://localhost:9100/metrics?callerId=logstyx-prod"
+curl "http://localhost:9100/metrics?callerId=staging-poller"
+```
+
+- Each declared `callerId` gets its own independent file offset / command `{{since}}` timestamp per scraper — polling as `logstyx-prod` has no effect on what `staging-poller` sees next, and vice versa.
+- A request with no `callerId` (or when `server.consumers` isn't set at all) falls back to a single shared `"default"` bucket — today's single-consumer behavior, unchanged.
+- A `callerId` that isn't in `server.consumers` is rejected with `400 Bad Request`, rather than silently tracked. This is deliberate: `/metrics` is often unauthenticated, so honoring arbitrary caller-supplied IDs would let anyone grow the in-memory tailing-state map without bound just by requesting new IDs. Only enable this by explicitly listing who's allowed to have their own view.
+
+**Config Example — nginx error log (file source, tailed):**
+```yaml
+- name: nginx_errors
+  source:
+    type: file
+    path: "/var/log/nginx/error.log"
+    format: log
+    max_lines: 50
+  metrics:
+    - match: "count"
+      name: "nginx_error_count"
+    - match: "lines"
+      name: "nginx_error_lines"
+```
+
+**Config Example — Docker container logs (command source, `{{since}}`-windowed):**
+```yaml
+- name: docker_errors
+  source:
+    type: command
+    command: "docker logs --since {{since}} --tail 1000 my-container 2>&1"
+    format: log
+    max_lines: 50
+  metrics:
+    - match: "count"
+      name: "docker_error_count"
+    - match: "lines"
+      name: "docker_error_lines"
+```
+
+`type: command` runs a shell command (via `sh -c` on Linux/macOS, `cmd /C` on Windows) and captures its combined stdout+stderr as the source text. Only put trusted, operator-authored commands in `config.yaml` — this is not meant to run untrusted or request-derived input.
+
+**Example Output** (both scrapers above, on a scrape where one new error appeared in each source since the last scrape):
+```json
+{
+  "nginx_errors": {
+    "nginx_error_count": 1,
+    "nginx_error_lines": [
+      "2026/07/18 10:00:05 [error] 123#0: *2 open() \"/var/www/missing.html\" failed (2: No such file or directory)"
+    ]
+  },
+  "docker_errors": {
+    "docker_error_count": 1,
+    "docker_error_lines": [
+      "something failed with an Error: boom"
+    ]
+  }
+}
+```
+
+- `<name>_count` / `<name>_lines` reflect only what's new since the last scrape (see tailing behavior above) — not the full history retained in the log or tail window.
+- `<name>_lines` is capped at `max_lines`; if more than that appeared since the last scrape, `count` still reflects the true total while `lines` shows only the first `max_lines` of them.
+- Nothing in the matched lines is redacted — if your logs contain IPs, paths, or tokens, they're shipped as-is. Enable `server.secret` (HMAC auth) on any deployment using `log` format.
+
+### 4. Raw Format
 
 Uses regex patterns to extract key-value pairs from text.
 
@@ -360,7 +456,7 @@ server:
 
 ## Endpoints
 
-- `GET /metrics` - Returns all collected metrics as JSON
+- `GET /metrics` - Returns all collected metrics as JSON. Accepts `?callerId=<id>` for [per-consumer log tailing](#per-consumer-tailing) when `server.consumers` is configured.
 - `GET /health` - Health check endpoint (always returns "OK")
 
 ## Example Response
