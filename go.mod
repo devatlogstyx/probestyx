@@ -3,6 +3,7 @@ module github.com/devatlogstyx/probestyx
 go 1.24.1
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/shirou/gopsutil/v3 v3.24.5
 	gopkg.in/yaml.v3 v3.0.1
 )

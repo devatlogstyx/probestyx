@@ -360,6 +360,8 @@ curl "http://localhost:9100/metrics?callerId=staging-poller"
 - `<name>_lines` is capped at `max_lines`; if more than that appeared since the last scrape, `count` still reflects the true total while `lines` shows only the first `max_lines` of them.
 - Nothing in the matched lines is redacted — if your logs contain IPs, paths, or tokens, they're shipped as-is. Enable `server.secret` (HMAC auth) on any deployment using `log` format.
 
+Under pull mode, a new error only reaches whoever's polling `/metrics` on their next scrape — up to a full poll interval of latency. If that's too slow, see **Push Mode** below: probestyx can send new lines to Logstyx itself, as they appear.
+
 ### 4. Raw Format
 
 Uses regex patterns to extract key-value pairs from text.
@@ -385,6 +387,52 @@ sensor_temperature=23.5
 sensor_humidity=65.2
 sensor_pressure=1013.25
 ```
+
+## Push Mode
+
+Probestyx is normally pull-only: it exposes `/metrics` and waits to be polled. Push mode is an opt-in add-on for `format: log` scrapers specifically — instead of waiting for the next poll, probestyx detects new error lines itself and POSTs them straight to Logstyx's ingestion API (`/api/v1/logs`), cutting latency from "up to one poll interval" down to about the length of a short debounce window.
+
+### How it decides when to push
+
+- **`type: file` scrapers are event-driven**: probestyx watches the log file's directory (not the file itself — this is what lets it survive log rotation, including the rename-then-recreate scheme, since a directory watch isn't tied to the old file's inode) and pushes shortly after new lines are written, debounced by ~200ms so a burst of many lines in one write collapses into a single push instead of one per line.
+- **`type: command` scrapers** (e.g. `docker logs`) have no file to watch, so they're re-run on a ticker instead — `push.command_poll_interval_seconds` (default 15).
+- Either way, one push is one scraper's new lines since the last trigger (matching the `{count, lines}` shape `format: log` already produces) — never one push per line, since Logstyx's ingestion API has no batch endpoint and this keeps well under its rate limit during a burst.
+- Push maintains its **own** tailing cursor per scraper, completely independent of whatever polls `/metrics` — enabling push for a scraper doesn't change what `/metrics` reports for it, and vice versa. If a scraper is both pulled and pushed, the same lines will appear through both channels independently (each side reports "what's new since *it* last looked").
+
+### Configuration
+
+```yaml
+server:
+  port: 9100
+
+push:
+  enabled: true
+  endpoint: "https://api.logstyx.com/api/v1/logs"
+  project_id: "your-project-id"
+  secret: "your-project-secret"       # from the Logstyx dashboard - NOT the same as server.secret
+  level: "error"                      # optional, default "error"
+  context:                            # optional static tags attached to every push
+    environment: "production"
+    region: "us-east-1"
+
+scrapers:
+  - name: nginx_errors
+    source:
+      type: file
+      path: "/var/log/nginx/error.log"
+      format: log
+      max_lines: 50
+    push: true                        # opt this scraper into push mode
+```
+
+`push.secret` is deliberately a **separate** field from `server.secret`: `server.secret` authenticates callers *of* probestyx's own `/metrics` endpoint, while `push.secret` is the credential probestyx uses to authenticate *itself* to Logstyx. They're different keys for different directions and must never be the same value. `push: true` on a scraper only takes effect when `Source.Format` is `log` and the global `push.enabled` is `true` — anything else is ignored with a startup warning, not a hard failure.
+
+### Reliability characteristics, plainly
+
+- **In-memory retry queue only** — failed pushes are retried with exponential backoff (1s up to 30s), but nothing is persisted to disk. A probestyx restart during a Logstyx outage loses whatever was queued, and (since tailing state is also in-memory) resets to "start from now" — it will not go back and re-send what it missed while it was down.
+- **A `401` (bad `secret`/`project_id`) is treated as fatal**, not retried: push logs one prominent warning, drops everything queued, and stops trying for the rest of that process's life, rather than silently retrying into a bounded queue forever. Restart probestyx after fixing the config.
+- **A `200` response does not guarantee the log was actually stored** — an unknown or mistyped `project_id` is silently accepted by Logstyx as a fake success and the log is discarded server-side, with no way to detect this from the response. Double-check `project_id` against the dashboard rather than trusting a lack of errors.
+- The queue is bounded (`push.max_queue_size`, default 256); if it fills up (e.g. a prolonged outage), the *oldest* pending item is dropped to make room, and this is logged.
 
 ## Calculations
 

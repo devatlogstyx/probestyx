@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/devatlogstyx/probestyx/internal/config"
 	"github.com/devatlogstyx/probestyx/internal/handlers"
+	"github.com/devatlogstyx/probestyx/internal/push"
 
 	"gopkg.in/yaml.v3"
 )
@@ -48,6 +50,19 @@ func main() {
 
 	// Initialize handlers with config
 	handlers.Init(&cfg)
+
+	// Start push mode, if configured. This is purely additive: any setup
+	// failure here is logged, never fatal - /metrics keeps working regardless
+	// of push's health.
+	if cfg.Push != nil && cfg.Push.Enabled {
+		if _, err := push.ValidatePushConfig(&cfg); err != nil {
+			log.Fatalf("invalid push config: %v", err)
+		}
+		sender := push.NewSender(*cfg.Push)
+		sender.Start(context.Background()) // no graceful-shutdown machinery exists anywhere in this binary today
+		go push.Run(&cfg, sender)
+		log.Printf("Push mode enabled: pushing to %s (project %s)", cfg.Push.Endpoint, cfg.Push.ProjectID)
+	}
 
 	// Start server
 	http.HandleFunc("/metrics", handlers.MetricsHandler)
