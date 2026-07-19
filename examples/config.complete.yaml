@@ -11,6 +11,24 @@ server:
   #   - logstyx-prod
   #   - staging-poller
 
+# Optional: pushes new lines from format: log scrapers (marked push: true
+# below) straight to Logstyx as they appear - event-driven for type: file
+# sources (nginx_errors), polled on command_poll_interval_seconds for
+# type: command sources (docker_errors) - instead of waiting for /metrics to
+# be polled. secret here is the Logstyx PROJECT secret from the dashboard,
+# distinct from server.secret above (that one authenticates callers of THIS
+# instance's /metrics; this one authenticates probestyx AS a caller of
+# Logstyx). See the README's "Push Mode" section for the full reliability
+# notes (in-memory-only retry queue, 401 is treated as fatal, etc).
+# push:
+#   enabled: true
+#   endpoint: "https://api.logstyx.com/api/v1/logs"
+#   project_id: "your-project-id"
+#   secret: "your-project-secret"
+#   level: "error"
+#   context:
+#     environment: "production"
+
 system:
   enabled: true
   metrics:
@@ -190,6 +208,7 @@ scrapers:
         name: "nginx_error_count"
       - match: "lines"
         name: "nginx_error_lines"
+    # push: true  # also send new lines to Logstyx as they're written (needs the top-level push: section above enabled)
 
   # Example 7c: Docker container logs - list only new matching lines since the
   # last scrape. {{since}} is substituted with the timestamp of this scraper's
@@ -205,6 +224,7 @@ scrapers:
         name: "docker_error_count"
       - match: "lines"
         name: "docker_error_lines"
+    # push: true  # command sources are re-polled on push.command_poll_interval_seconds instead of file-watched (needs the top-level push: section above enabled)
 
   # Example 8: Custom application metrics (JSON)
   - name: webapp_metrics
